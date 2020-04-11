@@ -10,6 +10,10 @@
 
 #include "api/video_codecs/video_encoder.h"
 
+#include <string.h>
+
+#include "rtc_base/checks.h"
+
 namespace webrtc {
 
 // TODO(mflodman): Add default complexity for VP9 and VP9.
@@ -49,11 +53,7 @@ VideoCodecH264 VideoEncoder::GetDefaultH264Settings() {
 
   h264_settings.frameDroppingOn = true;
   h264_settings.keyFrameInterval = 3000;
-  h264_settings.spsData = nullptr;
-  h264_settings.spsLen = 0;
-  h264_settings.ppsData = nullptr;
-  h264_settings.ppsLen = 0;
-  h264_settings.profile = H264::kProfileConstrainedBaseline;
+  h264_settings.numberOfTemporalLayers = 1;
 
   return h264_settings;
 }
@@ -78,27 +78,79 @@ VideoEncoder::ScalingSettings::~ScalingSettings() {}
 // static
 constexpr VideoEncoder::ScalingSettings::KOff
     VideoEncoder::ScalingSettings::kOff;
+// static
+constexpr uint8_t VideoEncoder::EncoderInfo::kMaxFramerateFraction;
 
-int32_t VideoEncoder::SetRates(uint32_t bitrate, uint32_t framerate) {
-  RTC_NOTREACHED() << "SetRate(uint32_t, uint32_t) is deprecated.";
-  return -1;
+VideoEncoder::EncoderInfo::EncoderInfo()
+    : scaling_settings(VideoEncoder::ScalingSettings::kOff),
+      supports_native_handle(false),
+      implementation_name("unknown"),
+      has_trusted_rate_controller(false),
+      is_hardware_accelerated(true),
+      has_internal_source(false),
+      fps_allocation{absl::InlinedVector<uint8_t, kMaxTemporalStreams>(
+          1,
+          kMaxFramerateFraction)} {}
+
+VideoEncoder::EncoderInfo::EncoderInfo(const EncoderInfo&) = default;
+
+VideoEncoder::EncoderInfo::~EncoderInfo() = default;
+
+VideoEncoder::RateControlParameters::RateControlParameters()
+    : bitrate(VideoBitrateAllocation()),
+      framerate_fps(0.0),
+      bandwidth_allocation(DataRate::Zero()) {}
+
+VideoEncoder::RateControlParameters::RateControlParameters(
+    const VideoBitrateAllocation& bitrate,
+    double framerate_fps)
+    : bitrate(bitrate),
+      framerate_fps(framerate_fps),
+      bandwidth_allocation(DataRate::bps(bitrate.get_sum_bps())) {}
+
+VideoEncoder::RateControlParameters::RateControlParameters(
+    const VideoBitrateAllocation& bitrate,
+    double framerate_fps,
+    DataRate bandwidth_allocation)
+    : bitrate(bitrate),
+      framerate_fps(framerate_fps),
+      bandwidth_allocation(bandwidth_allocation) {}
+
+VideoEncoder::RateControlParameters::~RateControlParameters() = default;
+
+int32_t VideoEncoder::InitEncode(const VideoCodec* codec_settings,
+                                 int32_t number_of_cores,
+                                 size_t max_payload_size) {
+  const VideoEncoder::Capabilities capabilities(/* loss_notification= */ false);
+  const VideoEncoder::Settings settings(capabilities, number_of_cores,
+                                        max_payload_size);
+  // In theory, this and the other version of InitEncode() could end up calling
+  // each other in a loop until we get a stack overflow.
+  // In practice, any subclass of VideoEncoder would overload at least one
+  // of these, and we have a TODO in the header file to make this pure virtual.
+  return InitEncode(codec_settings, settings);
 }
 
-int32_t VideoEncoder::SetRateAllocation(
-    const VideoBitrateAllocation& allocation,
-    uint32_t framerate) {
-  return SetRates(allocation.get_sum_kbps(), framerate);
+int VideoEncoder::InitEncode(const VideoCodec* codec_settings,
+                             const VideoEncoder::Settings& settings) {
+  // In theory, this and the other version of InitEncode() could end up calling
+  // each other in a loop until we get a stack overflow.
+  // In practice, any subclass of VideoEncoder would overload at least one
+  // of these, and we have a TODO in the header file to make this pure virtual.
+  return InitEncode(codec_settings, settings.number_of_cores,
+                    settings.max_payload_size);
 }
 
-VideoEncoder::ScalingSettings VideoEncoder::GetScalingSettings() const {
-  return ScalingSettings::kOff;
+void VideoEncoder::OnPacketLossRateUpdate(float packet_loss_rate) {}
+
+void VideoEncoder::OnRttUpdate(int64_t rtt_ms) {}
+
+void VideoEncoder::OnLossNotification(
+    const LossNotification& loss_notification) {}
+
+// TODO(webrtc:9722): Remove and make pure virtual.
+VideoEncoder::EncoderInfo VideoEncoder::GetEncoderInfo() const {
+  return EncoderInfo();
 }
 
-bool VideoEncoder::SupportsNativeHandle() const {
-  return false;
-}
-
-const char* VideoEncoder::ImplementationName() const {
-  return "unknown";
-}
 }  // namespace webrtc

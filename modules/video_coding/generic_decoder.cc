@@ -10,13 +10,14 @@
 
 #include "modules/video_coding/generic_decoder.h"
 
+#include <stddef.h>
 #include <algorithm>
 
-#include "modules/video_coding/include/video_coding.h"
-#include "modules/video_coding/internal_defines.h"
+#include "api/video/video_timing.h"
+#include "modules/video_coding/include/video_error_codes.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/timeutils.h"
+#include "rtc_base/time_utils.h"
 #include "rtc_base/trace_event.h"
 #include "system_wrappers/include/clock.h"
 
@@ -24,10 +25,7 @@ namespace webrtc {
 
 VCMDecodedFrameCallback::VCMDecodedFrameCallback(VCMTiming* timing,
                                                  Clock* clock)
-    : _clock(clock),
-      _timing(timing),
-      _timestampMap(kDecoderFrameMemoryLength),
-      _lastReceivedPictureID(0) {
+    : _clock(clock), _timing(timing), _timestampMap(kDecoderFrameMemoryLength) {
   ntp_offset_ =
       _clock->CurrentNtpInMilliseconds() - _clock->TimeInMilliseconds();
 }
@@ -36,7 +34,7 @@ VCMDecodedFrameCallback::~VCMDecodedFrameCallback() {}
 
 void VCMDecodedFrameCallback::SetUserReceiveCallback(
     VCMReceiveCallback* receiveCallback) {
-  RTC_DCHECK(construction_thread_.CalledOnValidThread());
+  RTC_DCHECK(construction_thread_.IsCurrent());
   RTC_DCHECK((!_receiveCallback && receiveCallback) ||
              (_receiveCallback && !receiveCallback));
   _receiveCallback = receiveCallback;
@@ -82,6 +80,12 @@ void VCMDecodedFrameCallback::Decoded(VideoFrame& decodedImage,
     return;
   }
 
+  decodedImage.set_ntp_time_ms(frameInfo->ntp_time_ms);
+  if (frameInfo->color_space) {
+    decodedImage.set_color_space(frameInfo->color_space);
+  }
+  decodedImage.set_rotation(frameInfo->rotation);
+
   const int64_t now_ms = _clock->TimeInMilliseconds();
   if (!decode_time_ms) {
     decode_time_ms = now_ms - frameInfo->decodeStartTimeMs;
@@ -90,6 +94,7 @@ void VCMDecodedFrameCallback::Decoded(VideoFrame& decodedImage,
                            frameInfo->renderTimeMs);
 
   // Report timing information.
+  TimingFrameInfo timing_frame_info;
   if (frameInfo->timing.flags != VideoSendTiming::kInvalid) {
     int64_t capture_time_ms = decodedImage.ntp_time_ms() - ntp_offset_;
     // Convert remote timestamps to local time from ntp timestamps.
@@ -114,7 +119,6 @@ void VCMDecodedFrameCallback::Decoded(VideoFrame& decodedImage,
           1;
     }
 
-    TimingFrameInfo timing_frame_info;
 
     timing_frame_info.capture_time_ms = capture_time_ms - sender_delta_ms;
     timing_frame_info.encode_start_ms =
@@ -129,36 +133,20 @@ void VCMDecodedFrameCallback::Decoded(VideoFrame& decodedImage,
         frameInfo->timing.network_timestamp_ms - sender_delta_ms;
     timing_frame_info.network2_timestamp_ms =
         frameInfo->timing.network2_timestamp_ms - sender_delta_ms;
-    timing_frame_info.receive_start_ms = frameInfo->timing.receive_start_ms;
-    timing_frame_info.receive_finish_ms = frameInfo->timing.receive_finish_ms;
-    timing_frame_info.decode_start_ms = frameInfo->decodeStartTimeMs;
-    timing_frame_info.decode_finish_ms = now_ms;
-    timing_frame_info.render_time_ms = frameInfo->renderTimeMs;
-    timing_frame_info.rtp_timestamp = decodedImage.timestamp();
-    timing_frame_info.flags = frameInfo->timing.flags;
-
-    _timing->SetTimingFrameInfo(timing_frame_info);
   }
+
+  timing_frame_info.flags = frameInfo->timing.flags;
+  timing_frame_info.decode_start_ms = frameInfo->decodeStartTimeMs;
+  timing_frame_info.decode_finish_ms = now_ms;
+  timing_frame_info.render_time_ms = frameInfo->renderTimeMs;
+  timing_frame_info.rtp_timestamp = decodedImage.timestamp();
+  timing_frame_info.receive_start_ms = frameInfo->timing.receive_start_ms;
+  timing_frame_info.receive_finish_ms = frameInfo->timing.receive_finish_ms;
+  _timing->SetTimingFrameInfo(timing_frame_info);
 
   decodedImage.set_timestamp_us(frameInfo->renderTimeMs *
                                 rtc::kNumMicrosecsPerMillisec);
-  decodedImage.set_rotation(frameInfo->rotation);
   _receiveCallback->FrameToRender(decodedImage, qp, frameInfo->content_type);
-}
-
-int32_t VCMDecodedFrameCallback::ReceivedDecodedReferenceFrame(
-    const uint64_t pictureId) {
-  return _receiveCallback->ReceivedDecodedReferenceFrame(pictureId);
-}
-
-int32_t VCMDecodedFrameCallback::ReceivedDecodedFrame(
-    const uint64_t pictureId) {
-  _lastReceivedPictureID = pictureId;
-  return 0;
-}
-
-uint64_t VCMDecodedFrameCallback::LastReceivedPictureID() const {
-  return _lastReceivedPictureID;
 }
 
 void VCMDecodedFrameCallback::OnDecoderImplementationName(
@@ -216,10 +204,18 @@ int32_t VCMGenericDecoder::Decode(const VCMEncodedFrame& frame, int64_t nowMs) {
   _frameInfos[_nextFrameInfoIdx].renderTimeMs = frame.RenderTimeMs();
   _frameInfos[_nextFrameInfoIdx].rotation = frame.rotation();
   _frameInfos[_nextFrameInfoIdx].timing = frame.video_timing();
+  _frameInfos[_nextFrameInfoIdx].ntp_time_ms =
+      frame.EncodedImage().ntp_time_ms_;
+  if (frame.ColorSpace()) {
+    _frameInfos[_nextFrameInfoIdx].color_space = *frame.ColorSpace();
+  } else {
+    _frameInfos[_nextFrameInfoIdx].color_space = absl::nullopt;
+  }
+
   // Set correctly only for key frames. Thus, use latest key frame
   // content type. If the corresponding key frame was lost, decode will fail
   // and content type will be ignored.
-  if (frame.FrameType() == kVideoFrameKey) {
+  if (frame.FrameType() == VideoFrameType::kVideoFrameKey) {
     _frameInfos[_nextFrameInfoIdx].content_type = frame.contentType();
     _last_keyframe_content_type = frame.contentType();
   } else {
@@ -229,7 +225,7 @@ int32_t VCMGenericDecoder::Decode(const VCMEncodedFrame& frame, int64_t nowMs) {
 
   _nextFrameInfoIdx = (_nextFrameInfoIdx + 1) % kDecoderFrameMemoryLength;
   int32_t ret = decoder_->Decode(frame.EncodedImage(), frame.MissingFrame(),
-                                 frame.CodecSpecific(), frame.RenderTimeMs());
+                                 frame.RenderTimeMs());
 
   _callback->OnDecoderImplementationName(decoder_->ImplementationName());
   if (ret < WEBRTC_VIDEO_CODEC_OK) {
@@ -237,8 +233,7 @@ int32_t VCMGenericDecoder::Decode(const VCMEncodedFrame& frame, int64_t nowMs) {
                         << frame.Timestamp() << ", error code: " << ret;
     _callback->Pop(frame.Timestamp());
     return ret;
-  } else if (ret == WEBRTC_VIDEO_CODEC_NO_OUTPUT ||
-             ret == WEBRTC_VIDEO_CODEC_REQUEST_SLI) {
+  } else if (ret == WEBRTC_VIDEO_CODEC_NO_OUTPUT) {
     // No output
     _callback->Pop(frame.Timestamp());
   }

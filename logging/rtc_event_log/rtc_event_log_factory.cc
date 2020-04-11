@@ -10,25 +10,13 @@
 
 #include "logging/rtc_event_log/rtc_event_log_factory.h"
 
-#include <utility>
-
-#include "logging/rtc_event_log/rtc_event_log.h"
+#include "absl/memory/memory.h"
+#include "api/task_queue/global_task_queue_factory.h"
 
 namespace webrtc {
 
-std::unique_ptr<RtcEventLog> RtcEventLogFactory::CreateRtcEventLog(
-    RtcEventLog::EncodingType encoding_type) {
-  return RtcEventLog::Create(encoding_type);
-}
-
-std::unique_ptr<RtcEventLog> RtcEventLogFactory::CreateRtcEventLog(
-    RtcEventLog::EncodingType encoding_type,
-    std::unique_ptr<rtc::TaskQueue> task_queue) {
-  return RtcEventLog::Create(encoding_type, std::move(task_queue));
-}
-
 std::unique_ptr<RtcEventLogFactoryInterface> CreateRtcEventLogFactory() {
-  return std::unique_ptr<RtcEventLogFactoryInterface>(new RtcEventLogFactory());
+  return absl::make_unique<RtcEventLogFactory>(&GlobalTaskQueueFactory());
 }
 
 }  // namespace webrtc

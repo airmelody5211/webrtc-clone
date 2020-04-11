@@ -10,7 +10,10 @@
 
 #include "rtc_tools/event_log_visualizer/plot_protobuf.h"
 
+#include <stddef.h>
+#include <iostream>
 #include <memory>
+#include <vector>
 
 namespace webrtc {
 
@@ -55,6 +58,7 @@ void ProtobufPlot::ExportProtobuf(webrtc::analytics::Chart* chart) {
   chart->set_xaxis_label(xaxis_label_);
   chart->set_yaxis_label(yaxis_label_);
   chart->set_title(title_);
+  chart->set_id(id_);
 }
 
 ProtobufPlotCollection::ProtobufPlotCollection() {}

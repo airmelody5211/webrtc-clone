@@ -23,7 +23,6 @@
 #define RTC_BASE_FLAGS_H_
 
 #include "rtc_base/checks.h"
-#include "rtc_base/constructormagic.h"
 
 namespace rtc {
 
@@ -33,7 +32,7 @@ union FlagValue {
   // bool values ('bool b = "false";' results in b == true!), we pass
   // and int argument to New_BOOL as this appears to be safer - sigh.
   // In particular, it prevents the (not uncommon!) bug where a bool
-  // flag is defined via: DEFINE_bool(flag, "false", "some comment");.
+  // flag is defined via: WEBRTC_DEFINE_bool(flag, "false", "some comment");.
   static FlagValue New_BOOL(int b) {
     FlagValue v;
     v.b = (b != 0);
@@ -152,7 +151,7 @@ class Flag {
 };
 
 // Internal use only.
-#define DEFINE_FLAG(type, c_type, name, default, comment)                   \
+#define WEBRTC_DEFINE_FLAG(type, c_type, name, default, comment)            \
   /* define and initialize the flag */                                      \
   c_type FLAG_##name = (default);                                           \
   /* register the flag */                                                   \
@@ -161,25 +160,25 @@ class Flag {
                                rtc::FlagValue::New_##type(default))
 
 // Internal use only.
-#define DECLARE_FLAG(c_type, name) \
-  /* declare the external flag */  \
+#define WEBRTC_DECLARE_FLAG(c_type, name) \
+  /* declare the external flag */         \
   extern c_type FLAG_##name
 
 // Use the following macros to define a new flag:
-#define DEFINE_bool(name, default, comment) \
-  DEFINE_FLAG(BOOL, bool, name, default, comment)
-#define DEFINE_int(name, default, comment) \
-  DEFINE_FLAG(INT, int, name, default, comment)
-#define DEFINE_float(name, default, comment) \
-  DEFINE_FLAG(FLOAT, double, name, default, comment)
-#define DEFINE_string(name, default, comment) \
-  DEFINE_FLAG(STRING, const char*, name, default, comment)
+#define WEBRTC_DEFINE_bool(name, default, comment) \
+  WEBRTC_DEFINE_FLAG(BOOL, bool, name, default, comment)
+#define WEBRTC_DEFINE_int(name, default, comment) \
+  WEBRTC_DEFINE_FLAG(INT, int, name, default, comment)
+#define WEBRTC_DEFINE_float(name, default, comment) \
+  WEBRTC_DEFINE_FLAG(FLOAT, double, name, default, comment)
+#define WEBRTC_DEFINE_string(name, default, comment) \
+  WEBRTC_DEFINE_FLAG(STRING, const char*, name, default, comment)
 
 // Use the following macros to declare a flag defined elsewhere:
-#define DECLARE_bool(name) DECLARE_FLAG(bool, name)
-#define DECLARE_int(name) DECLARE_FLAG(int, name)
-#define DECLARE_float(name) DECLARE_FLAG(double, name)
-#define DECLARE_string(name) DECLARE_FLAG(const char*, name)
+#define WEBRTC_DECLARE_bool(name) WEBRTC_DECLARE_FLAG(bool, name)
+#define WEBRTC_DECLARE_int(name) WEBRTC_DECLARE_FLAG(int, name)
+#define WEBRTC_DECLARE_float(name) WEBRTC_DECLARE_FLAG(double, name)
+#define WEBRTC_DECLARE_string(name) WEBRTC_DECLARE_FLAG(const char*, name)
 
 // The global list of all flags.
 class FlagList {
@@ -239,29 +238,6 @@ class FlagList {
  private:
   static Flag* list_;
 };
-
-#if defined(WEBRTC_WIN)
-// A helper class to translate Windows command line arguments into UTF8,
-// which then allows us to just pass them to the flags system.
-// This encapsulates all the work of getting the command line and translating
-// it to an array of 8-bit strings; all you have to do is create one of these,
-// and then call argc() and argv().
-class WindowsCommandLineArguments {
- public:
-  WindowsCommandLineArguments();
-  ~WindowsCommandLineArguments();
-
-  int argc() { return argc_; }
-  char** argv() { return argv_; }
-
- private:
-  int argc_;
-  char** argv_;
-
- private:
-  RTC_DISALLOW_COPY_AND_ASSIGN(WindowsCommandLineArguments);
-};
-#endif  // WEBRTC_WIN
 
 }  // namespace rtc
 

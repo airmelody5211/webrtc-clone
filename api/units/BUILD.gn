@@ -9,6 +9,7 @@
 import("../../webrtc.gni")
 
 rtc_source_set("data_rate") {
+  visibility = [ "*" ]
   sources = [
     "data_rate.cc",
     "data_rate.h",
@@ -16,36 +17,63 @@ rtc_source_set("data_rate") {
 
   deps = [
     ":data_size",
+    ":frequency",
     ":time_delta",
+    "..:array_view",
     "../../rtc_base:checks",
-    "../../rtc_base:rtc_base_approved",
+    "../../rtc_base:stringutils",
+    "../../rtc_base/units:unit_base",
   ]
 }
 
 rtc_source_set("data_size") {
+  visibility = [ "*" ]
   sources = [
     "data_size.cc",
     "data_size.h",
   ]
 
   deps = [
+    "..:array_view",
     "../../rtc_base:checks",
-    "../../rtc_base:rtc_base_approved",
+    "../../rtc_base:stringutils",
+    "../../rtc_base/units:unit_base",
   ]
 }
+
 rtc_source_set("time_delta") {
+  visibility = [ "*" ]
   sources = [
     "time_delta.cc",
     "time_delta.h",
   ]
 
   deps = [
+    "..:array_view",
     "../../rtc_base:checks",
-    "../../rtc_base:rtc_base_approved",
+    "../../rtc_base:stringutils",
+    "../../rtc_base/units:unit_base",
+  ]
+}
+
+rtc_source_set("frequency") {
+  visibility = [ "*" ]
+  sources = [
+    "frequency.cc",
+    "frequency.h",
+  ]
+
+  deps = [
+    ":time_delta",
+    "..:array_view",
+    "../../rtc_base:checks",
+    "../../rtc_base:stringutils",
+    "../../rtc_base/units:unit_base",
   ]
 }
 
 rtc_source_set("timestamp") {
+  visibility = [ "*" ]
   sources = [
     "timestamp.cc",
     "timestamp.h",
@@ -53,8 +81,10 @@ rtc_source_set("timestamp") {
 
   deps = [
     ":time_delta",
+    "..:array_view",
     "../../rtc_base:checks",
-    "../../rtc_base:rtc_base_approved",
+    "../../rtc_base:stringutils",
+    "../../rtc_base/units:unit_base",
   ]
 }
 
@@ -64,14 +94,17 @@ if (rtc_include_tests) {
     sources = [
       "data_rate_unittest.cc",
       "data_size_unittest.cc",
+      "frequency_unittest.cc",
       "time_delta_unittest.cc",
       "timestamp_unittest.cc",
     ]
     deps = [
       ":data_rate",
       ":data_size",
+      ":frequency",
       ":time_delta",
       ":timestamp",
+      "../../rtc_base:logging",
       "../../test:test_support",
     ]
   }

@@ -16,7 +16,6 @@
 #include "rtc_base/checks.h"
 #include "rtc_base/platform_thread.h"
 #include "rtc_base/system/arch.h"
-#include "system_wrappers/include/event_wrapper.h"
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <libkern/OSAtomic.h>  // OSAtomicCompareAndSwap()
@@ -115,8 +114,6 @@ void AudioDeviceMac::logCAMsg(const rtc::LoggingSeverity sev,
 
 AudioDeviceMac::AudioDeviceMac()
     : _ptrAudioBuffer(NULL),
-      _stopEventRec(*EventWrapper::Create()),
-      _stopEvent(*EventWrapper::Create()),
       _mixerManager(),
       _inputDeviceIndex(0),
       _outputDeviceIndex(0),
@@ -152,9 +149,6 @@ AudioDeviceMac::AudioDeviceMac()
       _renderBufSizeSamples(0),
       prev_key_state_() {
   RTC_LOG(LS_INFO) << __FUNCTION__ << " created";
-
-  RTC_DCHECK(&_stopEvent != NULL);
-  RTC_DCHECK(&_stopEventRec != NULL);
 
   memset(_renderConvertData, 0, sizeof(_renderConvertData));
   memset(&_outStreamFormat, 0, sizeof(AudioStreamBasicDescription));
@@ -204,8 +198,6 @@ AudioDeviceMac::~AudioDeviceMac() {
     RTC_LOG(LS_ERROR) << "semaphore_destroy() error: " << kernErr;
   }
 
-  delete &_stopEvent;
-  delete &_stopEventRec;
 }
 
 // ============================================================================
@@ -1303,11 +1295,10 @@ int32_t AudioDeviceMac::StartRecording() {
   }
 
   RTC_DCHECK(!capture_worker_thread_.get());
-  capture_worker_thread_.reset(
-      new rtc::PlatformThread(RunCapture, this, "CaptureWorkerThread"));
+  capture_worker_thread_.reset(new rtc::PlatformThread(
+      RunCapture, this, "CaptureWorkerThread", rtc::kRealtimePriority));
   RTC_DCHECK(capture_worker_thread_.get());
   capture_worker_thread_->Start();
-  capture_worker_thread_->SetPriority(rtc::kRealtimePriority);
 
   OSStatus err = noErr;
   if (_twoDevices) {
@@ -1338,7 +1329,7 @@ int32_t AudioDeviceMac::StopRecording() {
       _recording = false;
       _doStopRec = true;  // Signal to io proc to stop audio device
       _critSect.Leave();  // Cannot be under lock, risk of deadlock
-      if (kEventTimeout == _stopEventRec.Wait(2000)) {
+      if (!_stopEventRec.Wait(2000)) {
         rtc::CritScope critScoped(&_critSect);
         RTC_LOG(LS_WARNING) << "Timed out stopping the capture IOProc."
                             << "We may have failed to detect a device removal.";
@@ -1366,7 +1357,7 @@ int32_t AudioDeviceMac::StopRecording() {
       _recording = false;
       _doStop = true;     // Signal to io proc to stop audio device
       _critSect.Leave();  // Cannot be under lock, risk of deadlock
-      if (kEventTimeout == _stopEvent.Wait(2000)) {
+      if (!_stopEvent.Wait(2000)) {
         rtc::CritScope critScoped(&_critSect);
         RTC_LOG(LS_WARNING) << "Timed out stopping the shared IOProc."
                             << "We may have failed to detect a device removal.";
@@ -1439,10 +1430,9 @@ int32_t AudioDeviceMac::StartPlayout() {
   }
 
   RTC_DCHECK(!render_worker_thread_.get());
-  render_worker_thread_.reset(
-      new rtc::PlatformThread(RunRender, this, "RenderWorkerThread"));
+  render_worker_thread_.reset(new rtc::PlatformThread(
+      RunRender, this, "RenderWorkerThread", rtc::kRealtimePriority));
   render_worker_thread_->Start();
-  render_worker_thread_->SetPriority(rtc::kRealtimePriority);
 
   if (_twoDevices || !_recording) {
     OSStatus err = noErr;
@@ -1474,7 +1464,7 @@ int32_t AudioDeviceMac::StopPlayout() {
     _playing = false;
     _doStop = true;     // Signal to io proc to stop audio device
     _critSect.Leave();  // Cannot be under lock, risk of deadlock
-    if (kEventTimeout == _stopEvent.Wait(2000)) {
+    if (!_stopEvent.Wait(2000)) {
       rtc::CritScope critScoped(&_critSect);
       RTC_LOG(LS_WARNING) << "Timed out stopping the render IOProc."
                           << "We may have failed to detect a device removal.";
@@ -2369,8 +2359,10 @@ OSStatus AudioDeviceMac::implInConverterProc(UInt32* numberDataPackets,
   return 0;
 }
 
-bool AudioDeviceMac::RunRender(void* ptrThis) {
-  return static_cast<AudioDeviceMac*>(ptrThis)->RenderWorkerThread();
+void AudioDeviceMac::RunRender(void* ptrThis) {
+  AudioDeviceMac* device = static_cast<AudioDeviceMac*>(ptrThis);
+  while (device->RenderWorkerThread()) {
+  }
 }
 
 bool AudioDeviceMac::RenderWorkerThread() {
@@ -2438,8 +2430,10 @@ bool AudioDeviceMac::RenderWorkerThread() {
   return true;
 }
 
-bool AudioDeviceMac::RunCapture(void* ptrThis) {
-  return static_cast<AudioDeviceMac*>(ptrThis)->CaptureWorkerThread();
+void AudioDeviceMac::RunCapture(void* ptrThis) {
+  AudioDeviceMac* device = static_cast<AudioDeviceMac*>(ptrThis);
+  while (device->CaptureWorkerThread()) {
+  }
 }
 
 bool AudioDeviceMac::CaptureWorkerThread() {

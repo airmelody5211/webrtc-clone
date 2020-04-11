@@ -15,47 +15,70 @@
 
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "rtc_base/checks.h"
-#include "system_wrappers/include/clock.h"
+#include "rtc_base/logging.h"
 
 namespace webrtc {
 
-SendTimeHistory::SendTimeHistory(const Clock* clock,
-                                 int64_t packet_age_limit_ms)
-    : clock_(clock), packet_age_limit_ms_(packet_age_limit_ms) {}
+SendTimeHistory::SendTimeHistory(int64_t packet_age_limit_ms)
+    : packet_age_limit_ms_(packet_age_limit_ms) {}
 
 SendTimeHistory::~SendTimeHistory() {}
 
-void SendTimeHistory::AddAndRemoveOld(const PacketFeedback& packet) {
-  int64_t now_ms = clock_->TimeInMilliseconds();
-  // Remove old.
+void SendTimeHistory::RemoveOld(int64_t at_time_ms) {
   while (!history_.empty() &&
-         now_ms - history_.begin()->second.creation_time_ms >
+         at_time_ms - history_.begin()->second.creation_time_ms >
              packet_age_limit_ms_) {
     // TODO(sprang): Warn if erasing (too many) old items?
     RemovePacketBytes(history_.begin()->second);
     history_.erase(history_.begin());
   }
-
-  // Add new.
-  int64_t unwrapped_seq_num = seq_num_unwrapper_.Unwrap(packet.sequence_number);
-  PacketFeedback packet_copy = packet;
-  packet_copy.long_sequence_number = unwrapped_seq_num;
-  history_.insert(std::make_pair(unwrapped_seq_num, packet_copy));
-  if (packet.send_time_ms >= 0)
-    AddPacketBytes(packet_copy);
 }
 
-bool SendTimeHistory::OnSentPacket(uint16_t sequence_number,
-                                   int64_t send_time_ms) {
+void SendTimeHistory::AddNewPacket(PacketFeedback packet) {
+  packet.long_sequence_number =
+      seq_num_unwrapper_.Unwrap(packet.sequence_number);
+  history_.insert(std::make_pair(packet.long_sequence_number, packet));
+  if (packet.send_time_ms >= 0) {
+    AddPacketBytes(packet);
+    last_send_time_ms_ = std::max(last_send_time_ms_, packet.send_time_ms);
+  }
+}
+
+void SendTimeHistory::AddAndRemoveOld(const PacketFeedback& packet,
+                                      int64_t at_time_ms) {
+  RemoveOld(at_time_ms);
+  AddNewPacket(packet);
+}
+
+void SendTimeHistory::AddUntracked(size_t packet_size, int64_t send_time_ms) {
+  if (send_time_ms < last_send_time_ms_) {
+    RTC_LOG(LS_WARNING) << "ignoring untracked data for out of order packet.";
+  }
+  pending_untracked_size_ += packet_size;
+  last_untracked_send_time_ms_ =
+      std::max(last_untracked_send_time_ms_, send_time_ms);
+}
+
+SendTimeHistory::Status SendTimeHistory::OnSentPacket(uint16_t sequence_number,
+                                                      int64_t send_time_ms) {
   int64_t unwrapped_seq_num = seq_num_unwrapper_.Unwrap(sequence_number);
   auto it = history_.find(unwrapped_seq_num);
   if (it == history_.end())
-    return false;
+    return Status::kNotAdded;
   bool packet_retransmit = it->second.send_time_ms >= 0;
   it->second.send_time_ms = send_time_ms;
+  last_send_time_ms_ = std::max(last_send_time_ms_, send_time_ms);
   if (!packet_retransmit)
     AddPacketBytes(it->second);
-  return true;
+  if (pending_untracked_size_ > 0) {
+    if (send_time_ms < last_untracked_send_time_ms_)
+      RTC_LOG(LS_WARNING)
+          << "appending acknowledged data for out of order packet. (Diff: "
+          << last_untracked_send_time_ms_ - send_time_ms << " ms.)";
+    it->second.unacknowledged_data += pending_untracked_size_;
+    pending_untracked_size_ = 0;
+  }
+  return packet_retransmit ? Status::kDuplicate : Status::kOk;
 }
 
 absl::optional<PacketFeedback> SendTimeHistory::GetPacket(
@@ -90,14 +113,24 @@ bool SendTimeHistory::GetFeedback(PacketFeedback* packet_feedback,
   return true;
 }
 
-size_t SendTimeHistory::GetOutstandingBytes(uint16_t local_net_id,
-                                            uint16_t remote_net_id) const {
+DataSize SendTimeHistory::GetOutstandingData(uint16_t local_net_id,
+                                             uint16_t remote_net_id) const {
   auto it = in_flight_bytes_.find({local_net_id, remote_net_id});
   if (it != in_flight_bytes_.end()) {
-    return it->second;
+    return DataSize::bytes(it->second);
   } else {
-    return 0;
+    return DataSize::Zero();
   }
+}
+
+absl::optional<int64_t> SendTimeHistory::GetFirstUnackedSendTime() const {
+  if (!last_ack_seq_num_)
+    return absl::nullopt;
+  auto it = history_.find(*last_ack_seq_num_);
+  if (it == history_.end() ||
+      it->second.send_time_ms == PacketFeedback::kNoSendTime)
+    return absl::nullopt;
+  return it->second.send_time_ms;
 }
 
 void SendTimeHistory::AddPacketBytes(const PacketFeedback& packet) {

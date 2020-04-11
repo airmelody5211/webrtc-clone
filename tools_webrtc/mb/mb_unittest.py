@@ -382,8 +382,8 @@ class UnitTest(unittest.TestCase):
         '--output_dir=${ISOLATED_OUTDIR}/test_logs',
         '--gtest_color=no',
         '--timeout=500',
-        '--retry_failed=3',
         '--workers=1',
+        '--retry_failed=3',
         './base_unittests',
         '--asan=0',
         '--lsan=0',
@@ -502,8 +502,8 @@ class UnitTest(unittest.TestCase):
         '--output_dir=${ISOLATED_OUTDIR}/test_logs',
         '--gtest_color=no',
         '--timeout=900',
-        '--retry_failed=3',
         '--workers=1',
+        '--retry_failed=3',
         './base_unittests',
         '--asan=0',
         '--lsan=0',
@@ -775,6 +775,11 @@ class UnitTest(unittest.TestCase):
 
   def test_lookup(self):
     self.check(['lookup', '-c', 'debug_goma'], ret=0)
+
+  def test_quiet_lookup(self):
+    self.check(['lookup', '-c', 'debug_goma', '--quiet'], ret=0,
+               out=('is_debug = true\n'
+                    'use_goma = true\n'))
 
   def test_lookup_goma_dir_expansion(self):
     self.check(['lookup', '-c', 'rel_bot', '-g', '/foo'], ret=0,

@@ -10,7 +10,7 @@
 
 package org.webrtc;
 
-import javax.annotation.Nullable;
+import android.support.annotation.Nullable;
 import org.webrtc.EncodedImage;
 
 /**
@@ -28,10 +28,19 @@ public interface VideoEncoder {
     public final int maxFramerate;
     public final int numberOfSimulcastStreams;
     public final boolean automaticResizeOn;
+    public final Capabilities capabilities;
+
+    // TODO(bugs.webrtc.org/10720): Remove.
+    @Deprecated
+    public Settings(int numberOfCores, int width, int height, int startBitrate, int maxFramerate,
+        int numberOfSimulcastStreams, boolean automaticResizeOn) {
+      this(numberOfCores, width, height, startBitrate, maxFramerate, numberOfSimulcastStreams,
+          automaticResizeOn, new VideoEncoder.Capabilities(false /* lossNotification */));
+    }
 
     @CalledByNative("Settings")
     public Settings(int numberOfCores, int width, int height, int startBitrate, int maxFramerate,
-        int numberOfSimulcastStreams, boolean automaticResizeOn) {
+        int numberOfSimulcastStreams, boolean automaticResizeOn, Capabilities capabilities) {
       this.numberOfCores = numberOfCores;
       this.width = width;
       this.height = height;
@@ -39,6 +48,21 @@ public interface VideoEncoder {
       this.maxFramerate = maxFramerate;
       this.numberOfSimulcastStreams = numberOfSimulcastStreams;
       this.automaticResizeOn = automaticResizeOn;
+      this.capabilities = capabilities;
+    }
+  }
+
+  /** Capabilities (loss notification, etc.) passed to the encoder by WebRTC. */
+  public class Capabilities {
+    /**
+     * The remote side has support for the loss notification RTCP feedback message format, and will
+     * be sending these feedback messages if necessary.
+     */
+    public final boolean lossNotification;
+
+    @CalledByNative("Capabilities")
+    public Capabilities(boolean lossNotification) {
+      this.lossNotification = lossNotification;
     }
   }
 
@@ -209,14 +233,6 @@ public interface VideoEncoder {
    * Requests the encoder to encode a frame.
    */
   @CalledByNative VideoCodecStatus encode(VideoFrame frame, EncodeInfo info);
-
-  /**
-   * Informs the encoder of the packet loss and the round-trip time of the network.
-   *
-   * @param packetLoss How many packets are lost on average per 255 packets.
-   * @param roundTripTimeMs Round-trip time of the network in milliseconds.
-   */
-  @CalledByNative VideoCodecStatus setChannelParameters(short packetLoss, long roundTripTimeMs);
 
   /** Sets the bitrate allocation and the target framerate for the encoder. */
   @CalledByNative VideoCodecStatus setRateAllocation(BitrateAllocation allocation, int framerate);

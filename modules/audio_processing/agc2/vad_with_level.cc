@@ -11,10 +11,12 @@
 #include "modules/audio_processing/agc2/vad_with_level.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 
+#include "api/array_view.h"
 #include "common_audio/include/audio_util.h"
 #include "modules/audio_processing/agc2/rnn_vad/common.h"
-#include "rtc_base/checks.h"
 
 namespace webrtc {
 
@@ -32,7 +34,7 @@ float ProcessForRms(AudioFrameView<const float> frame) {
   for (const auto& x : frame.channel(0)) {
     rms += x * x;
   }
-  return sqrt(rms / frame.samples_per_channel());
+  return std::sqrt(rms / frame.samples_per_channel());
 }
 }  // namespace
 

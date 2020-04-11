@@ -12,10 +12,10 @@
 
 #include <string.h>
 
-#include <DXGI.h>
-#include <DXGIFormat.h>
-#include <Windows.h>
+#include <dxgi.h>
+#include <dxgiformat.h>
 #include <unknwn.h>
+#include <windows.h>
 
 #include <algorithm>
 
@@ -23,7 +23,7 @@
 #include "modules/desktop_capture/win/dxgi_texture_staging.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/stringutils.h"
+#include "rtc_base/string_utils.h"
 #include "rtc_base/win32.h"
 
 namespace webrtc {

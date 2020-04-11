@@ -10,7 +10,6 @@
 
 #include "modules/video_coding/frame_buffer2.h"
 
-#include "modules/video_coding/jitter_estimator.h"
 #include "modules/video_coding/timing.h"
 #include "system_wrappers/include/clock.h"
 
@@ -56,19 +55,19 @@ class FuzzyFrameObject : public video_coding::EncodedFrame {
   FuzzyFrameObject() {}
   ~FuzzyFrameObject() {}
 
-  bool GetBitstream(uint8_t* destination) const override { return false; }
   int64_t ReceivedTime() const override { return 0; }
   int64_t RenderTime() const override { return _renderTimeMs; }
 };
 }  // namespace
 
 void FuzzOneInput(const uint8_t* data, size_t size) {
+  if (size > 10000) {
+    return;
+  }
   DataReader reader(data, size);
   Clock* clock = Clock::GetRealTimeClock();
-  VCMJitterEstimator jitter_estimator(clock, 0, 0);
   VCMTiming timing(clock);
-  video_coding::FrameBuffer frame_buffer(clock, &jitter_estimator, &timing,
-                                         nullptr);
+  video_coding::FrameBuffer frame_buffer(clock, &timing, nullptr);
 
   while (reader.MoreToRead()) {
     if (reader.GetNum<uint8_t>() & 1) {

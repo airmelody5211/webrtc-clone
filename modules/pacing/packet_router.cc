@@ -11,14 +11,16 @@
 #include "modules/pacing/packet_router.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 
+#include "absl/types/optional.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/transport_feedback.h"
-#include "rtc_base/atomicops.h"
+#include "rtc_base/atomic_ops.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/timeutils.h"
+#include "rtc_base/time_utils.h"
 
 namespace webrtc {
 namespace {
@@ -97,11 +99,12 @@ void PacketRouter::RemoveReceiveRtpModule(
   rtcp_feedback_senders_.erase(it);
 }
 
-bool PacketRouter::TimeToSendPacket(uint32_t ssrc,
-                                    uint16_t sequence_number,
-                                    int64_t capture_timestamp,
-                                    bool retransmission,
-                                    const PacedPacketInfo& pacing_info) {
+RtpPacketSendResult PacketRouter::TimeToSendPacket(
+    uint32_t ssrc,
+    uint16_t sequence_number,
+    int64_t capture_timestamp,
+    bool retransmission,
+    const PacedPacketInfo& pacing_info) {
   rtc::CritScope cs(&modules_crit_);
   for (auto* rtp_module : rtp_send_modules_) {
     if (!rtp_module->SendingMedia()) {
@@ -119,7 +122,7 @@ bool PacketRouter::TimeToSendPacket(uint32_t ssrc,
                                           pacing_info);
     }
   }
-  return true;
+  return RtpPacketSendResult::kPacketNotFound;
 }
 
 size_t PacketRouter::TimeToSendPadding(size_t bytes_to_send,

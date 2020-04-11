@@ -15,10 +15,10 @@
 #include <algorithm>
 
 #include "rtc_base/arraysize.h"
-#include "rtc_base/byteorder.h"
+#include "rtc_base/byte_order.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/stringutils.h"
+#include "rtc_base/string_utils.h"
 
 namespace rtc {
 
@@ -72,9 +72,9 @@ const char* inet_ntop_v4(const void* src, char* dst, socklen_t size) {
   }
   const struct in_addr* as_in_addr =
       reinterpret_cast<const struct in_addr*>(src);
-  rtc::sprintfn(dst, size, "%d.%d.%d.%d", as_in_addr->S_un.S_un_b.s_b1,
-                as_in_addr->S_un.S_un_b.s_b2, as_in_addr->S_un.S_un_b.s_b3,
-                as_in_addr->S_un.S_un_b.s_b4);
+  snprintf(dst, size, "%d.%d.%d.%d", as_in_addr->S_un.S_un_b.s_b1,
+           as_in_addr->S_un.S_un_b.s_b2, as_in_addr->S_un.S_un_b.s_b3,
+           as_in_addr->S_un.S_un_b.s_b4);
   return dst;
 }
 
@@ -127,7 +127,7 @@ const char* inet_ntop_v6(const void* src, char* dst, socklen_t size) {
     *cursor++ = ':';
     *cursor++ = ':';
     if (maxpos == 4) {
-      cursor += rtc::sprintfn(cursor, INET6_ADDRSTRLEN - 2, "ffff:");
+      cursor += snprintf(cursor, INET6_ADDRSTRLEN - 2, "ffff:");
     }
     const struct in_addr* as_v4 =
         reinterpret_cast<const struct in_addr*>(&(as_shorts[6]));
@@ -136,8 +136,8 @@ const char* inet_ntop_v6(const void* src, char* dst, socklen_t size) {
   } else {
     for (int i = 0; i < run_array_size; ++i) {
       if (runpos[i] == -1) {
-        cursor += rtc::sprintfn(cursor, INET6_ADDRSTRLEN - (cursor - dst), "%x",
-                                NetworkToHost16(as_shorts[i]));
+        cursor += snprintf(cursor, INET6_ADDRSTRLEN - (cursor - dst), "%x",
+                           NetworkToHost16(as_shorts[i]));
         if (i != 7 && runpos[i + 1] != 1) {
           *cursor++ = ':';
         }
@@ -224,8 +224,8 @@ int inet_pton_v6(const char* src, void* dst) {
       *(readcursor + 2) != 0) {
     // Check for periods, which we'll take as a sign of v4 addresses.
     const char* addrstart = readcursor + 2;
-    if (rtc::strchr(addrstart, ".")) {
-      const char* colon = rtc::strchr(addrstart, "::");
+    if (strchr(addrstart, '.')) {
+      const char* colon = strchr(addrstart, ':');
       if (colon) {
         uint16_t a_short;
         int bytesread = 0;
@@ -310,58 +310,12 @@ int inet_pton_v6(const char* src, void* dst) {
   return 1;
 }
 
-bool Utf8ToWindowsFilename(const std::string& utf8, std::wstring* filename) {
-  // TODO: Integrate into fileutils.h
-  // TODO: Handle wide and non-wide cases via TCHAR?
-  // TODO: Skip \\?\ processing if the length is not > MAX_PATH?
-  // TODO: Write unittests
-
-  // Convert to Utf16
-  int wlen =
-      ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                            static_cast<int>(utf8.length() + 1), nullptr, 0);
-  if (0 == wlen) {
-    return false;
-  }
-  wchar_t* wfilename = STACK_ARRAY(wchar_t, wlen);
-  if (0 == ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                                 static_cast<int>(utf8.length() + 1), wfilename,
-                                 wlen)) {
-    return false;
-  }
-  // Replace forward slashes with backslashes
-  std::replace(wfilename, wfilename + wlen, L'/', L'\\');
-  // Convert to complete filename
-  DWORD full_len = ::GetFullPathName(wfilename, 0, nullptr, nullptr);
-  if (0 == full_len) {
-    return false;
-  }
-  wchar_t* filepart = nullptr;
-  wchar_t* full_filename = STACK_ARRAY(wchar_t, full_len + 6);
-  wchar_t* start = full_filename + 6;
-  if (0 == ::GetFullPathName(wfilename, full_len, start, &filepart)) {
-    return false;
-  }
-  // Add long-path prefix
-  const wchar_t kLongPathPrefix[] = L"\\\\?\\UNC";
-  if ((start[0] != L'\\') || (start[1] != L'\\')) {
-    // Non-unc path:     <pathname>
-    //      Becomes: \\?\<pathname>
-    start -= 4;
-    RTC_DCHECK(start >= full_filename);
-    memcpy(start, kLongPathPrefix, 4 * sizeof(wchar_t));
-  } else if (start[2] != L'?') {
-    // Unc path:       \\<server>\<pathname>
-    //  Becomes: \\?\UNC\<server>\<pathname>
-    start -= 6;
-    RTC_DCHECK(start >= full_filename);
-    memcpy(start, kLongPathPrefix, 7 * sizeof(wchar_t));
-  } else {
-    // Already in long-path form.
-  }
-  filename->assign(start);
-  return true;
-}
+// Windows UWP applications cannot obtain versioning information from
+// the sandbox with intention (as behehaviour based on OS versioning rather
+// than feature discovery / compilation flags is discoraged and Windows
+// 10 is living continously updated version unlike previous versions
+// of Windows).
+#if !defined(WINUWP)
 
 bool GetOsVersion(int* major, int* minor, int* build) {
   OSVERSIONINFO info = {0};
@@ -378,25 +332,6 @@ bool GetOsVersion(int* major, int* minor, int* build) {
   return false;
 }
 
-bool GetCurrentProcessIntegrityLevel(int* level) {
-  bool ret = false;
-  HANDLE process = ::GetCurrentProcess(), token;
-  if (OpenProcessToken(process, TOKEN_QUERY | TOKEN_QUERY_SOURCE, &token)) {
-    DWORD size;
-    if (!GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size) &&
-        GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
-      char* buf = STACK_ARRAY(char, size);
-      TOKEN_MANDATORY_LABEL* til =
-          reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf);
-      if (GetTokenInformation(token, TokenIntegrityLevel, til, size, &size)) {
-        DWORD count = *GetSidSubAuthorityCount(til->Label.Sid);
-        *level = *GetSidSubAuthority(til->Label.Sid, count - 1);
-        ret = true;
-      }
-    }
-    CloseHandle(token);
-  }
-  return ret;
-}
+#endif  // !defined(WINUWP)
 
 }  // namespace rtc

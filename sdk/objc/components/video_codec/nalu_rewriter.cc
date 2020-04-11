@@ -149,8 +149,6 @@ bool H264CMSampleBufferToAnnexBBuffer(
   for (size_t i = 0; i < frag_offsets.size(); ++i) {
     header->fragmentationOffset[i] = frag_offsets[i];
     header->fragmentationLength[i] = frag_lengths[i];
-    header->fragmentationPlType[i] = 0;
-    header->fragmentationTimeDiff[i] = 0;
   }
   *out_header = std::move(header);
   CFRelease(contiguous_buffer);
@@ -160,7 +158,8 @@ bool H264CMSampleBufferToAnnexBBuffer(
 bool H264AnnexBBufferToCMSampleBuffer(const uint8_t* annexb_buffer,
                                       size_t annexb_buffer_size,
                                       CMVideoFormatDescriptionRef video_format,
-                                      CMSampleBufferRef* out_sample_buffer) {
+                                      CMSampleBufferRef* out_sample_buffer,
+                                      CMMemoryPoolRef memory_pool) {
   RTC_DCHECK(annexb_buffer);
   RTC_DCHECK(out_sample_buffer);
   RTC_DCHECK(video_format);
@@ -185,11 +184,11 @@ bool H264AnnexBBufferToCMSampleBuffer(const uint8_t* annexb_buffer,
   }
 
   // Allocate memory as a block buffer.
-  // TODO(tkchin): figure out how to use a pool.
   CMBlockBufferRef block_buffer = nullptr;
+  CFAllocatorRef block_allocator = CMMemoryPoolGetAllocator(memory_pool);
   OSStatus status = CMBlockBufferCreateWithMemoryBlock(
-      nullptr, nullptr, reader.BytesRemaining(), nullptr, nullptr, 0,
-      reader.BytesRemaining(), kCMBlockBufferAssureMemoryNowFlag,
+      kCFAllocatorDefault, nullptr, reader.BytesRemaining(), block_allocator,
+      nullptr, 0, reader.BytesRemaining(), kCMBlockBufferAssureMemoryNowFlag,
       &block_buffer);
   if (status != kCMBlockBufferNoErr) {
     RTC_LOG(LS_ERROR) << "Failed to create block buffer.";
@@ -199,8 +198,9 @@ bool H264AnnexBBufferToCMSampleBuffer(const uint8_t* annexb_buffer,
   // Make sure block buffer is contiguous.
   CMBlockBufferRef contiguous_buffer = nullptr;
   if (!CMBlockBufferIsRangeContiguous(block_buffer, 0, 0)) {
-    status = CMBlockBufferCreateContiguous(
-        nullptr, block_buffer, nullptr, nullptr, 0, 0, 0, &contiguous_buffer);
+    status = CMBlockBufferCreateContiguous(kCFAllocatorDefault, block_buffer,
+                                           block_allocator, nullptr, 0, 0, 0,
+                                           &contiguous_buffer);
     if (status != noErr) {
       RTC_LOG(LS_ERROR) << "Failed to flatten non-contiguous block buffer: "
                         << status;
@@ -236,9 +236,9 @@ bool H264AnnexBBufferToCMSampleBuffer(const uint8_t* annexb_buffer,
   }
 
   // Create sample buffer.
-  status = CMSampleBufferCreate(nullptr, contiguous_buffer, true, nullptr,
-                                nullptr, video_format, 1, 0, nullptr, 0,
-                                nullptr, out_sample_buffer);
+  status = CMSampleBufferCreate(kCFAllocatorDefault, contiguous_buffer, true,
+                                nullptr, nullptr, video_format, 1, 0, nullptr,
+                                0, nullptr, out_sample_buffer);
   if (status != noErr) {
     RTC_LOG(LS_ERROR) << "Failed to create sample buffer.";
     CFRelease(contiguous_buffer);

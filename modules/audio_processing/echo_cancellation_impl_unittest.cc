@@ -13,19 +13,13 @@
 #include "modules/audio_processing/aec/aec_core.h"
 #include "modules/audio_processing/echo_cancellation_impl.h"
 #include "modules/audio_processing/include/audio_processing.h"
-#include "rtc_base/criticalsection.h"
+#include "rtc_base/critical_section.h"
 #include "test/gtest.h"
 
 namespace webrtc {
 TEST(EchoCancellationInternalTest, ExtendedFilter) {
-  rtc::CriticalSection crit_render;
-  rtc::CriticalSection crit_capture;
-  EchoCancellationImpl echo_canceller(&crit_render, &crit_capture);
+  EchoCancellationImpl echo_canceller;
   echo_canceller.Initialize(AudioProcessing::kSampleRate32kHz, 2, 2, 2);
-
-  EXPECT_TRUE(echo_canceller.aec_core() == nullptr);
-
-  echo_canceller.Enable(true);
 
   AecCore* aec_core = echo_canceller.aec_core();
   ASSERT_TRUE(aec_core != NULL);
@@ -33,16 +27,14 @@ TEST(EchoCancellationInternalTest, ExtendedFilter) {
   EXPECT_EQ(0, WebRtcAec_extended_filter_enabled(aec_core));
 
   Config config;
-  config.Set<ExtendedFilter>(new ExtendedFilter(true));
-  echo_canceller.SetExtraOptions(config);
+  echo_canceller.SetExtraOptions(true, false, false);
   EXPECT_EQ(1, WebRtcAec_extended_filter_enabled(aec_core));
 
   // Retains setting after initialization.
   echo_canceller.Initialize(AudioProcessing::kSampleRate16kHz, 2, 2, 2);
   EXPECT_EQ(1, WebRtcAec_extended_filter_enabled(aec_core));
 
-  config.Set<ExtendedFilter>(new ExtendedFilter(false));
-  echo_canceller.SetExtraOptions(config);
+  echo_canceller.SetExtraOptions(false, false, false);
   EXPECT_EQ(0, WebRtcAec_extended_filter_enabled(aec_core));
 
   // Retains setting after initialization.
@@ -51,15 +43,8 @@ TEST(EchoCancellationInternalTest, ExtendedFilter) {
 }
 
 TEST(EchoCancellationInternalTest, DelayAgnostic) {
-  rtc::CriticalSection crit_render;
-  rtc::CriticalSection crit_capture;
-  EchoCancellationImpl echo_canceller(&crit_render, &crit_capture);
+  EchoCancellationImpl echo_canceller;
   echo_canceller.Initialize(AudioProcessing::kSampleRate32kHz, 1, 1, 1);
-
-  EXPECT_TRUE(echo_canceller.aec_core() == NULL);
-
-  EXPECT_EQ(0, echo_canceller.Enable(true));
-  EXPECT_TRUE(echo_canceller.is_enabled());
 
   AecCore* aec_core = echo_canceller.aec_core();
   ASSERT_TRUE(aec_core != NULL);
@@ -67,8 +52,7 @@ TEST(EchoCancellationInternalTest, DelayAgnostic) {
   EXPECT_EQ(0, WebRtcAec_delay_agnostic_enabled(aec_core));
 
   Config config;
-  config.Set<DelayAgnostic>(new DelayAgnostic(true));
-  echo_canceller.SetExtraOptions(config);
+  echo_canceller.SetExtraOptions(false, true, false);
   EXPECT_EQ(1, WebRtcAec_delay_agnostic_enabled(aec_core));
 
   // Retains setting after initialization.
@@ -76,7 +60,7 @@ TEST(EchoCancellationInternalTest, DelayAgnostic) {
   EXPECT_EQ(1, WebRtcAec_delay_agnostic_enabled(aec_core));
 
   config.Set<DelayAgnostic>(new DelayAgnostic(false));
-  echo_canceller.SetExtraOptions(config);
+  echo_canceller.SetExtraOptions(false, false, false);
   EXPECT_EQ(0, WebRtcAec_delay_agnostic_enabled(aec_core));
 
   // Retains setting after initialization.
@@ -85,9 +69,7 @@ TEST(EchoCancellationInternalTest, DelayAgnostic) {
 }
 
 TEST(EchoCancellationInternalTest, InterfaceConfiguration) {
-  rtc::CriticalSection crit_render;
-  rtc::CriticalSection crit_capture;
-  EchoCancellationImpl echo_canceller(&crit_render, &crit_capture);
+  EchoCancellationImpl echo_canceller;
   echo_canceller.Initialize(AudioProcessing::kSampleRate16kHz, 1, 1, 1);
 
   EXPECT_EQ(0, echo_canceller.enable_drift_compensation(true));
@@ -95,22 +77,17 @@ TEST(EchoCancellationInternalTest, InterfaceConfiguration) {
   EXPECT_EQ(0, echo_canceller.enable_drift_compensation(false));
   EXPECT_FALSE(echo_canceller.is_drift_compensation_enabled());
 
-  EchoCancellation::SuppressionLevel level[] = {
-      EchoCancellation::kLowSuppression, EchoCancellation::kModerateSuppression,
-      EchoCancellation::kHighSuppression,
+  EchoCancellationImpl::SuppressionLevel level[] = {
+      EchoCancellationImpl::kLowSuppression,
+      EchoCancellationImpl::kModerateSuppression,
+      EchoCancellationImpl::kHighSuppression,
   };
   for (size_t i = 0; i < arraysize(level); i++) {
     EXPECT_EQ(0, echo_canceller.set_suppression_level(level[i]));
     EXPECT_EQ(level[i], echo_canceller.suppression_level());
   }
 
-  EchoCancellation::Metrics metrics;
-  EXPECT_EQ(AudioProcessing::kNotEnabledError,
-            echo_canceller.GetMetrics(&metrics));
-
-  EXPECT_EQ(0, echo_canceller.Enable(true));
-  EXPECT_TRUE(echo_canceller.is_enabled());
-
+  EchoCancellationImpl::Metrics metrics;
   EXPECT_EQ(0, echo_canceller.enable_metrics(true));
   EXPECT_TRUE(echo_canceller.are_metrics_enabled());
   EXPECT_EQ(0, echo_canceller.enable_metrics(false));
@@ -121,26 +98,13 @@ TEST(EchoCancellationInternalTest, InterfaceConfiguration) {
   EXPECT_EQ(0, echo_canceller.enable_delay_logging(false));
   EXPECT_FALSE(echo_canceller.is_delay_logging_enabled());
 
-  EXPECT_EQ(0, echo_canceller.Enable(false));
-  EXPECT_FALSE(echo_canceller.is_enabled());
-
   int median = 0;
   int std = 0;
   float poor_fraction = 0;
   EXPECT_EQ(AudioProcessing::kNotEnabledError,
             echo_canceller.GetDelayMetrics(&median, &std, &poor_fraction));
 
-  EXPECT_EQ(0, echo_canceller.Enable(true));
-  EXPECT_TRUE(echo_canceller.is_enabled());
-  EXPECT_EQ(0, echo_canceller.Enable(false));
-  EXPECT_FALSE(echo_canceller.is_enabled());
-
-  EXPECT_EQ(0, echo_canceller.Enable(true));
-  EXPECT_TRUE(echo_canceller.is_enabled());
   EXPECT_TRUE(echo_canceller.aec_core() != NULL);
-  EXPECT_EQ(0, echo_canceller.Enable(false));
-  EXPECT_FALSE(echo_canceller.is_enabled());
-  EXPECT_FALSE(echo_canceller.aec_core() != NULL);
 }
 
 }  // namespace webrtc

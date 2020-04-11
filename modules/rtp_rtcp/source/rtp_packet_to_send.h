@@ -10,9 +10,13 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RTP_PACKET_TO_SEND_H_
 #define MODULES_RTP_RTCP_SOURCE_RTP_PACKET_TO_SEND_H_
 
+#include <stddef.h>
+#include <stdint.h>
 #include <vector>
 
+#include "absl/types/optional.h"
 #include "api/array_view.h"
+#include "api/video/video_timing.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "modules/rtp_rtcp/source/rtp_packet.h"
 
@@ -20,6 +24,14 @@ namespace webrtc {
 // Class to hold rtp packet with metadata for sender side.
 class RtpPacketToSend : public RtpPacket {
  public:
+  enum class Type {
+    kAudio,                   // Audio media packets.
+    kVideo,                   // Video media packets.
+    kRetransmission,          // RTX (usually) packets send as response to NACK.
+    kForwardErrorCorrection,  // FEC packets.
+    kPadding                  // RTX or plain padding sent to maintain BWE.
+  };
+
   explicit RtpPacketToSend(const ExtensionManager* extensions);
   RtpPacketToSend(const ExtensionManager* extensions, size_t capacity);
   RtpPacketToSend(const RtpPacketToSend& packet);
@@ -34,6 +46,9 @@ class RtpPacketToSend : public RtpPacket {
   int64_t capture_time_ms() const { return capture_time_ms_; }
 
   void set_capture_time_ms(int64_t time) { capture_time_ms_ = time; }
+
+  void set_packet_type(Type type) { packet_type_ = type; }
+  absl::optional<Type> packet_type() const { return packet_type_; }
 
   // Additional data bound to the RTP packet for use in application code,
   // outside of WebRTC.
@@ -71,6 +86,7 @@ class RtpPacketToSend : public RtpPacket {
 
  private:
   int64_t capture_time_ms_ = 0;
+  absl::optional<Type> packet_type_;
   std::vector<uint8_t> application_data_;
 };
 

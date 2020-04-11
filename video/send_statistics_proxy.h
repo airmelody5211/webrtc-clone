@@ -18,14 +18,15 @@
 
 #include "api/video/video_stream_encoder_observer.h"
 #include "call/video_send_stream.h"
-#include "common_types.h"  // NOLINT(build/include)
+#include "modules/rtp_rtcp/include/report_block_data.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_coding_defines.h"
-#include "rtc_base/criticalsection.h"
+#include "rtc_base/critical_section.h"
 #include "rtc_base/numerics/exp_filter.h"
-#include "rtc_base/ratetracker.h"
+#include "rtc_base/rate_tracker.h"
 #include "rtc_base/thread_annotations.h"
 #include "system_wrappers/include/clock.h"
+#include "video/quality_limitation_reason_tracker.h"
 #include "video/report_block_stats.h"
 #include "video/stats_counter.h"
 
@@ -33,6 +34,7 @@ namespace webrtc {
 
 class SendStatisticsProxy : public VideoStreamEncoderObserver,
                             public RtcpStatisticsCallback,
+                            public ReportBlockDataObserver,
                             public RtcpPacketTypeCounterObserver,
                             public StreamDataCountersCallback,
                             public BitrateStatisticsObserver,
@@ -53,6 +55,10 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
 
   void OnSendEncodedImage(const EncodedImage& encoded_image,
                           const CodecSpecificInfo* codec_info) override;
+
+  void OnEncoderImplementationChanged(
+      const std::string& implementation_name) override;
+
   // Used to update incoming frame rate.
   void OnIncomingFrame(int width, int height) override;
 
@@ -90,6 +96,8 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
   void StatisticsUpdated(const RtcpStatistics& statistics,
                          uint32_t ssrc) override;
   void CNameChanged(const char* cname, uint32_t ssrc) override;
+  // From ReportBlockDataObserver.
+  void OnReportBlockDataUpdated(ReportBlockData report_block_data) override;
   // From RtcpPacketTypeCounterObserver.
   void RtcpPacketTypesCounterUpdated(
       uint32_t ssrc,
@@ -109,6 +117,7 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
 
   void SendSideDelayUpdated(int avg_delay_ms,
                             int max_delay_ms,
+                            uint64_t total_delay_ms,
                             uint32_t ssrc) override;
 
  private:
@@ -236,10 +245,20 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
   rtc::ExpFilter encode_time_ RTC_GUARDED_BY(crit_);
   int quality_downscales_ RTC_GUARDED_BY(crit_);
   int cpu_downscales_ RTC_GUARDED_BY(crit_);
+  QualityLimitationReasonTracker quality_limitation_reason_tracker_
+      RTC_GUARDED_BY(crit_);
   rtc::RateTracker media_byte_rate_tracker_ RTC_GUARDED_BY(crit_);
   rtc::RateTracker encoded_frame_rate_tracker_ RTC_GUARDED_BY(crit_);
 
   absl::optional<int64_t> last_outlier_timestamp_ RTC_GUARDED_BY(crit_);
+
+  struct EncoderChangeEvent {
+    std::string previous_encoder_implementation;
+    std::string new_encoder_implementation;
+  };
+  // Stores the last change in encoder implementation in an optional, so that
+  // the event can be consumed.
+  absl::optional<EncoderChangeEvent> encoder_changed_;
 
   // Contains stats used for UMA histograms. These stats will be reset if
   // content type changes between real-time video and screenshare, since these

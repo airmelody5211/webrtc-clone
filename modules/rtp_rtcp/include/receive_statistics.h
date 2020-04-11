@@ -12,10 +12,13 @@
 #define MODULES_RTP_RTCP_INCLUDE_RECEIVE_STATISTICS_H_
 
 #include <map>
+#include <memory>
 #include <vector>
 
+#include "call/rtp_packet_sink_interface.h"
 #include "modules/include/module.h"
 #include "modules/include/module_common_types.h"
+#include "modules/rtp_rtcp/include/rtcp_statistics.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/report_block.h"
 #include "rtc_base/deprecation.h"
@@ -48,45 +51,37 @@ class StreamStatistician {
   virtual uint32_t BitrateReceived() const = 0;
 };
 
-class ReceiveStatistics : public ReceiveStatisticsProvider {
+class ReceiveStatistics : public ReceiveStatisticsProvider,
+                          public RtpPacketSinkInterface {
  public:
   ~ReceiveStatistics() override = default;
 
-  static ReceiveStatistics* Create(Clock* clock);
-
-  // Updates the receive statistics with this packet.
-  virtual void IncomingPacket(const RTPHeader& rtp_header,
-                              size_t packet_length) = 0;
-
-  // TODO(nisse): Wrapper for backwards compatibility. Delete as soon as
-  // downstream callers are updated.
-  RTC_DEPRECATED
-  void IncomingPacket(const RTPHeader& rtp_header,
-                      size_t packet_length,
-                      bool retransmitted) {
-    IncomingPacket(rtp_header, packet_length);
+  static ReceiveStatistics* Create(Clock* clock) {
+    return Create(clock, nullptr, nullptr).release();
   }
 
+  static std::unique_ptr<ReceiveStatistics> Create(
+      Clock* clock,
+      RtcpStatisticsCallback* rtcp_callback,
+      StreamDataCountersCallback* rtp_callback);
+
   // Increment counter for number of FEC packets received.
-  virtual void FecPacketReceived(const RTPHeader& header,
-                                 size_t packet_length) = 0;
+  virtual void FecPacketReceived(const RtpPacketReceived& packet) = 0;
 
   // Returns a pointer to the statistician of an ssrc.
   virtual StreamStatistician* GetStatistician(uint32_t ssrc) const = 0;
 
-  // Sets the max reordering threshold in number of packets.
+  // TODO(bugs.webrtc.org/10669): Deprecated, delete as soon as downstream
+  // projects are updated. This method sets the max reordering threshold of all
+  // current and future streams.
   virtual void SetMaxReorderingThreshold(int max_reordering_threshold) = 0;
+
+  // Sets the max reordering threshold in number of packets.
+  virtual void SetMaxReorderingThreshold(uint32_t ssrc,
+                                         int max_reordering_threshold) = 0;
   // Detect retransmissions, enabling updates of the retransmitted counters. The
   // default is false.
   virtual void EnableRetransmitDetection(uint32_t ssrc, bool enable) = 0;
-
-  // Called on new RTCP stats creation.
-  virtual void RegisterRtcpStatisticsCallback(
-      RtcpStatisticsCallback* callback) = 0;
-
-  // Called on new RTP stats creation.
-  virtual void RegisterRtpStatisticsCallback(
-      StreamDataCountersCallback* callback) = 0;
 };
 
 }  // namespace webrtc

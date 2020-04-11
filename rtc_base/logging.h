@@ -51,16 +51,12 @@
 #include <string>
 #include <utility>
 
-#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
-#include <CoreServices/CoreServices.h>
-#endif
-
+#include "absl/meta/type_traits.h"
 #include "absl/strings/string_view.h"
-#include "rtc_base/constructormagic.h"
+#include "rtc_base/constructor_magic.h"
 #include "rtc_base/deprecation.h"
 #include "rtc_base/strings/string_builder.h"
 #include "rtc_base/system/inline.h"
-#include "rtc_base/thread_annotations.h"
 
 #if !defined(NDEBUG) || defined(DLOG_ALWAYS_ON)
 #define RTC_DLOG_IS_ON 1
@@ -70,17 +66,10 @@
 
 namespace rtc {
 
-#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
-// Returns a UTF8 description from an OS X Status error.
-std::string DescriptionFromOSStatus(OSStatus err);
-#endif
-
 //////////////////////////////////////////////////////////////////////
 
 // Note that the non-standard LoggingSeverity aliases exist because they are
 // still in broad use.  The meanings of the levels are:
-//  LS_SENSITIVE: Information which should only be logged with the consent
-//   of the user, due to privacy concerns.
 //  LS_VERBOSE: This level is for data which we do not want to appear in the
 //   normal debug log, but should appear in diagnostic logs.
 //  LS_INFO: Chatty level used in debugging for all sorts of things, the default
@@ -89,7 +78,6 @@ std::string DescriptionFromOSStatus(OSStatus err);
 //  LS_ERROR: Something that should not have occurred.
 //  LS_NONE: Don't log.
 enum LoggingSeverity {
-  LS_SENSITIVE,
   LS_VERBOSE,
   LS_INFO,
   LS_WARNING,
@@ -105,12 +93,10 @@ enum LogErrorContext {
   ERRCTX_NONE,
   ERRCTX_ERRNO,     // System-local errno
   ERRCTX_HRESULT,   // Windows HRESULT
-  ERRCTX_OSSTATUS,  // MacOS OSStatus
 
   // Abbreviations for LOG_E macro
   ERRCTX_EN = ERRCTX_ERRNO,     // LOG_E(sev, EN, x)
   ERRCTX_HR = ERRCTX_HRESULT,   // LOG_E(sev, HR, x)
-  ERRCTX_OS = ERRCTX_OSSTATUS,  // LOG_E(sev, OS, x)
 };
 
 // Virtual sink interface that can receive log messages.
@@ -121,6 +107,8 @@ class LogSink {
   virtual void OnLogMessage(const std::string& msg,
                             LoggingSeverity severity,
                             const char* tag);
+  virtual void OnLogMessage(const std::string& message,
+                            LoggingSeverity severity);
   virtual void OnLogMessage(const std::string& message) = 0;
 };
 
@@ -193,11 +181,10 @@ struct Val {
   T val;
 };
 
-// TODO(bugs.webrtc.org/9278): Get rid of this specialization when callers
-// don't need it anymore. No in-tree caller does, but some external callers
-// still do.
-template <>
-struct Val<LogArgType::kStdString, std::string> {
+// Case for when we need to construct a temp string and then print that.
+// (We can't use Val<CheckArgType::kStdString, const std::string*>
+// because we need somewhere to store the temp string.)
+struct ToStringVal {
   static constexpr LogArgType Type() { return LogArgType::kStdString; }
   const std::string* GetVal() const { return &val; }
   std::string val;
@@ -255,6 +242,15 @@ inline Val<LogArgType::kLogMetadataErr, LogMetadataErr> MakeVal(
   return {x};
 }
 
+// The enum class types are not implicitly convertible to arithmetic types.
+template <typename T,
+          absl::enable_if_t<std::is_enum<T>::value &&
+                            !std::is_arithmetic<T>::value>* = nullptr>
+inline decltype(MakeVal(std::declval<absl::underlying_type_t<T>>())) MakeVal(
+    T x) {
+  return {static_cast<absl::underlying_type_t<T>>(x)};
+}
+
 #ifdef WEBRTC_ANDROID
 inline Val<LogArgType::kLogMetadataTag, LogMetadataTag> MakeVal(
     const LogMetadataTag& x) {
@@ -262,24 +258,35 @@ inline Val<LogArgType::kLogMetadataTag, LogMetadataTag> MakeVal(
 }
 #endif
 
+template <typename T, class = void>
+struct has_to_log_string : std::false_type {};
+template <typename T>
+struct has_to_log_string<T, decltype(ToLogString(std::declval<T>()))>
+    : std::true_type {};
+
 // Handle arbitrary types other than the above by falling back to stringstream.
 // TODO(bugs.webrtc.org/9278): Get rid of this overload when callers don't need
 // it anymore. No in-tree caller does, but some external callers still do.
 template <
     typename T,
-    typename T1 =
-        typename std::remove_cv<typename std::remove_reference<T>::type>::type,
-    typename std::enable_if<
-        std::is_class<T1>::value && !std::is_same<T1, std::string>::value &&
-        !std::is_same<T1, LogMetadata>::value &&
+    typename T1 = absl::decay_t<T>,
+    absl::enable_if_t<std::is_class<T1>::value &&
+                      !std::is_same<T1, std::string>::value &&
+                      !std::is_same<T1, LogMetadata>::value &&
+                      !has_to_log_string<T1>::value &&
 #ifdef WEBRTC_ANDROID
-        !std::is_same<T1, LogMetadataTag>::value &&
+                      !std::is_same<T1, LogMetadataTag>::value &&
 #endif
-        !std::is_same<T1, LogMetadataErr>::value>::type* = nullptr>
-Val<LogArgType::kStdString, std::string> MakeVal(const T& x) {
+                      !std::is_same<T1, LogMetadataErr>::value>* = nullptr>
+ToStringVal MakeVal(const T& x) {
   std::ostringstream os;  // no-presubmit-check TODO(webrtc:8982)
   os << x;
   return {os.str()};
+}
+
+template <typename T, absl::enable_if_t<has_to_log_string<T>::value>* = nullptr>
+ToStringVal MakeVal(const T& x) {
+  return {ToLogString(x)};
 }
 
 void Log(const LogArgType* fmt, ...);
@@ -292,22 +299,20 @@ class LogStreamer;
 template <>
 class LogStreamer<> final {
  public:
-  template <
-      typename U,
-      typename std::enable_if<std::is_arithmetic<U>::value>::type* = nullptr>
-  RTC_FORCE_INLINE LogStreamer<decltype(MakeVal(std::declval<U>()))> operator<<(
-      U arg) const {
-    return LogStreamer<decltype(MakeVal(std::declval<U>()))>(MakeVal(arg),
-                                                             this);
+  template <typename U,
+            typename V = decltype(MakeVal(std::declval<U>())),
+            absl::enable_if_t<std::is_arithmetic<U>::value ||
+                              std::is_enum<U>::value>* = nullptr>
+  RTC_FORCE_INLINE LogStreamer<V> operator<<(U arg) const {
+    return LogStreamer<V>(MakeVal(arg), this);
   }
 
-  template <
-      typename U,
-      typename std::enable_if<!std::is_arithmetic<U>::value>::type* = nullptr>
-  RTC_FORCE_INLINE LogStreamer<decltype(MakeVal(std::declval<U>()))> operator<<(
-      const U& arg) const {
-    return LogStreamer<decltype(MakeVal(std::declval<U>()))>(MakeVal(arg),
-                                                             this);
+  template <typename U,
+            typename V = decltype(MakeVal(std::declval<U>())),
+            absl::enable_if_t<!std::is_arithmetic<U>::value &&
+                              !std::is_enum<U>::value>* = nullptr>
+  RTC_FORCE_INLINE LogStreamer<V> operator<<(const U& arg) const {
+    return LogStreamer<V>(MakeVal(arg), this);
   }
 
   template <typename... Us>
@@ -325,22 +330,20 @@ class LogStreamer<T, Ts...> final {
   RTC_FORCE_INLINE LogStreamer(T arg, const LogStreamer<Ts...>* prior)
       : arg_(arg), prior_(prior) {}
 
-  template <
-      typename U,
-      typename std::enable_if<std::is_arithmetic<U>::value>::type* = nullptr>
-  RTC_FORCE_INLINE LogStreamer<decltype(MakeVal(std::declval<U>())), T, Ts...>
-  operator<<(U arg) const {
-    return LogStreamer<decltype(MakeVal(std::declval<U>())), T, Ts...>(
-        MakeVal(arg), this);
+  template <typename U,
+            typename V = decltype(MakeVal(std::declval<U>())),
+            absl::enable_if_t<std::is_arithmetic<U>::value ||
+                              std::is_enum<U>::value>* = nullptr>
+  RTC_FORCE_INLINE LogStreamer<V, T, Ts...> operator<<(U arg) const {
+    return LogStreamer<V, T, Ts...>(MakeVal(arg), this);
   }
 
-  template <
-      typename U,
-      typename std::enable_if<!std::is_arithmetic<U>::value>::type* = nullptr>
-  RTC_FORCE_INLINE LogStreamer<decltype(MakeVal(std::declval<U>())), T, Ts...>
-  operator<<(const U& arg) const {
-    return LogStreamer<decltype(MakeVal(std::declval<U>())), T, Ts...>(
-        MakeVal(arg), this);
+  template <typename U,
+            typename V = decltype(MakeVal(std::declval<U>())),
+            absl::enable_if_t<!std::is_arithmetic<U>::value &&
+                              !std::is_enum<U>::value>* = nullptr>
+  RTC_FORCE_INLINE LogStreamer<V, T, Ts...> operator<<(const U& arg) const {
+    return LogStreamer<V, T, Ts...>(MakeVal(arg), this);
   }
 
   template <typename... Us>
@@ -363,11 +366,6 @@ class LogCall final {
   RTC_FORCE_INLINE void operator&(const LogStreamer<Ts...>& streamer) {
     streamer.Call();
   }
-};
-
-// TODO(bugs.webrtc.org/9278): Remove this once it's no longer used.
-struct LogMessageVoidify {
-  void operator&(std::ostream&) {}  // no-presubmit-check TODO(webrtc:8982)
 };
 
 }  // namespace webrtc_logging_impl
@@ -516,17 +514,10 @@ class LogMessage {
 // Logging Helpers
 //////////////////////////////////////////////////////////////////////
 
-// DEPRECATED.
-// TODO(bugs.webrtc.org/9278): Remove once there are no more users.
-#define RTC_LOG_SEVERITY_PRECONDITION(sev) \
-  (rtc::LogMessage::IsNoop(sev))           \
-      ? static_cast<void>(0)               \
-      : rtc::webrtc_logging_impl::LogMessageVoidify()&
-
-#define RTC_LOG_FILE_LINE(sev, file, line)                                     \
-  rtc::webrtc_logging_impl::LogCall() &                                        \
-      rtc::webrtc_logging_impl::LogStreamer<>()                                \
-          << rtc::webrtc_logging_impl::LogMetadata(__FILE__, __LINE__, sev)
+#define RTC_LOG_FILE_LINE(sev, file, line)      \
+  rtc::webrtc_logging_impl::LogCall() &         \
+      rtc::webrtc_logging_impl::LogStreamer<>() \
+          << rtc::webrtc_logging_impl::LogMetadata(file, line, sev)
 
 #define RTC_LOG(sev) RTC_LOG_FILE_LINE(rtc::sev, __FILE__, __LINE__)
 

@@ -8,11 +8,13 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "modules/audio_processing/test/aec_dump_based_simulator.h"
+
 #include <iostream>
 
-#include "modules/audio_processing/test/aec_dump_based_simulator.h"
-#include "modules/audio_processing/test/runtime_setting_util.h"
-
+#include "absl/memory/memory.h"
+#include "modules/audio_processing/echo_cancellation_impl.h"
+#include "modules/audio_processing/echo_control_mobile_impl.h"
 #include "modules/audio_processing/test/protobuf_utils.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
@@ -68,7 +70,9 @@ bool VerifyFloatBitExactness(const webrtc::audioproc::Stream& msg,
 AecDumpBasedSimulator::AecDumpBasedSimulator(
     const SimulationSettings& settings,
     std::unique_ptr<AudioProcessingBuilder> ap_builder)
-    : AudioProcessingSimulator(settings, std::move(ap_builder)) {}
+    : AudioProcessingSimulator(settings, std::move(ap_builder)) {
+  MaybeOpenCallOrderFile();
+}
 
 AecDumpBasedSimulator::~AecDumpBasedSimulator() = default;
 
@@ -319,17 +323,17 @@ void AecDumpBasedSimulator::HandleMessage(
     }
 
     if (msg.has_aec_suppression_level() || settings_.aec_suppression_level) {
-      auto level = static_cast<webrtc::EchoCancellation::SuppressionLevel>(
+      auto level = static_cast<webrtc::EchoCancellationImpl::SuppressionLevel>(
           settings_.aec_suppression_level ? *settings_.aec_suppression_level
                                           : msg.aec_suppression_level());
       if (level ==
-          webrtc::EchoCancellation::SuppressionLevel::kLowSuppression) {
+          webrtc::EchoCancellationImpl::SuppressionLevel::kLowSuppression) {
         RTC_LOG(LS_ERROR)
             << "Ignoring deprecated setting: AEC2 low suppression";
       } else {
         apm_config.echo_canceller.legacy_moderate_suppression_level =
-            (level ==
-             webrtc::EchoCancellation::SuppressionLevel::kModerateSuppression);
+            (level == webrtc::EchoCancellationImpl::SuppressionLevel::
+                          kModerateSuppression);
         if (settings_.use_verbose_logging) {
           std::cout << " aec_suppression_level: " << level << std::endl;
         }
@@ -347,30 +351,16 @@ void AecDumpBasedSimulator::HandleMessage(
       }
     }
 
-    if (msg.has_aecm_comfort_noise_enabled() ||
-        settings_.use_aecm_comfort_noise) {
-      bool enable = settings_.use_aecm_comfort_noise
-                        ? *settings_.use_aecm_comfort_noise
-                        : msg.aecm_comfort_noise_enabled();
-      RTC_CHECK_EQ(AudioProcessing::kNoError,
-                   ap_->echo_control_mobile()->enable_comfort_noise(enable));
-      if (settings_.use_verbose_logging) {
-        std::cout << " aecm_comfort_noise_enabled: "
-                  << (enable ? "true" : "false") << std::endl;
-      }
+    if (msg.has_aecm_comfort_noise_enabled() &&
+        msg.aecm_comfort_noise_enabled()) {
+      RTC_LOG(LS_ERROR) << "Ignoring deprecated setting: AECM comfort noise";
     }
 
-    if (msg.has_aecm_routing_mode() || settings_.aecm_routing_mode) {
-      int routing_mode = settings_.aecm_routing_mode
-                             ? *settings_.aecm_routing_mode
-                             : msg.aecm_routing_mode();
-      RTC_CHECK_EQ(AudioProcessing::kNoError,
-                   ap_->echo_control_mobile()->set_routing_mode(
-                       static_cast<webrtc::EchoControlMobile::RoutingMode>(
-                           routing_mode)));
-      if (settings_.use_verbose_logging) {
-        std::cout << " aecm_routing_mode: " << routing_mode << std::endl;
-      }
+    if (msg.has_aecm_routing_mode() &&
+        static_cast<webrtc::EchoControlMobileImpl::RoutingMode>(
+            msg.aecm_routing_mode()) != EchoControlMobileImpl::kSpeakerphone) {
+      RTC_LOG(LS_ERROR) << "Ignoring deprecated setting: AECM routing mode: "
+                        << msg.aecm_routing_mode();
     }
 
     if (msg.has_agc_enabled() || settings_.use_agc) {
@@ -400,6 +390,19 @@ void AecDumpBasedSimulator::HandleMessage(
                    ap_->gain_control()->enable_limiter(enable));
       if (settings_.use_verbose_logging) {
         std::cout << " agc_limiter_enabled: " << (enable ? "true" : "false")
+                  << std::endl;
+      }
+    }
+
+    if (settings_.use_agc2) {
+      bool enable = *settings_.use_agc2;
+      apm_config.gain_controller2.enabled = enable;
+      if (settings_.agc2_fixed_gain_db) {
+        apm_config.gain_controller2.fixed_digital.gain_db =
+            *settings_.agc2_fixed_gain_db;
+      }
+      if (settings_.use_verbose_logging) {
+        std::cout << " agc2_enabled: " << (enable ? "true" : "false")
                   << std::endl;
       }
     }
@@ -437,8 +440,7 @@ void AecDumpBasedSimulator::HandleMessage(
 
     if (msg.has_ns_enabled() || settings_.use_ns) {
       bool enable = settings_.use_ns ? *settings_.use_ns : msg.ns_enabled();
-      RTC_CHECK_EQ(AudioProcessing::kNoError,
-                   ap_->noise_suppression()->Enable(enable));
+      apm_config.noise_suppression.enabled = enable;
       if (settings_.use_verbose_logging) {
         std::cout << " ns_enabled: " << (enable ? "true" : "false")
                   << std::endl;
@@ -447,9 +449,8 @@ void AecDumpBasedSimulator::HandleMessage(
 
     if (msg.has_ns_level() || settings_.ns_level) {
       int level = settings_.ns_level ? *settings_.ns_level : msg.ns_level();
-      RTC_CHECK_EQ(AudioProcessing::kNoError,
-                   ap_->noise_suppression()->set_level(
-                       static_cast<NoiseSuppression::Level>(level)));
+      apm_config.noise_suppression.level =
+          static_cast<AudioProcessing::Config::NoiseSuppression::Level>(level);
       if (settings_.use_verbose_logging) {
         std::cout << " ns_level: " << level << std::endl;
       }
@@ -460,8 +461,14 @@ void AecDumpBasedSimulator::HandleMessage(
                               ? *settings_.use_pre_amplifier
                               : msg.pre_amplifier_enabled();
       apm_config.pre_amplifier.enabled = enable;
-      apm_config.pre_amplifier.fixed_gain_factor =
-          settings_.pre_amplifier_gain_factor;
+    }
+
+    if (msg.has_pre_amplifier_fixed_gain_factor() ||
+        settings_.pre_amplifier_gain_factor) {
+      const float gain = settings_.pre_amplifier_gain_factor
+                             ? *settings_.pre_amplifier_gain_factor
+                             : msg.pre_amplifier_fixed_gain_factor();
+      apm_config.pre_amplifier.fixed_gain_factor = gain;
     }
 
     if (settings_.use_verbose_logging && msg.has_experiments_description() &&
@@ -489,6 +496,7 @@ void AecDumpBasedSimulator::HandleMessage(const webrtc::audioproc::Init& msg) {
   RTC_CHECK(msg.has_num_input_channels());
   RTC_CHECK(msg.has_num_reverse_channels());
   RTC_CHECK(msg.has_reverse_sample_rate());
+  MaybeOpenCallOrderFile();
 
   if (settings_.use_verbose_logging) {
     std::cout << "Init at frame:" << std::endl;
@@ -540,6 +548,9 @@ void AecDumpBasedSimulator::HandleMessage(const webrtc::audioproc::Init& msg) {
 
 void AecDumpBasedSimulator::HandleMessage(
     const webrtc::audioproc::Stream& msg) {
+  if (call_order_output_file_) {
+    *call_order_output_file_ << "c";
+  }
   PrepareProcessStreamCall(msg);
   ProcessStream(interface_used_ == InterfaceType::kFixedInterface);
   VerifyProcessStreamBitExactness(msg);
@@ -547,6 +558,9 @@ void AecDumpBasedSimulator::HandleMessage(
 
 void AecDumpBasedSimulator::HandleMessage(
     const webrtc::audioproc::ReverseStream& msg) {
+  if (call_order_output_file_) {
+    *call_order_output_file_ << "r";
+  }
   PrepareReverseProcessStreamCall(msg);
   ProcessReverseStream(interface_used_ == InterfaceType::kFixedInterface);
 }
@@ -554,7 +568,38 @@ void AecDumpBasedSimulator::HandleMessage(
 void AecDumpBasedSimulator::HandleMessage(
     const webrtc::audioproc::RuntimeSetting& msg) {
   RTC_CHECK(ap_.get());
-  ReplayRuntimeSetting(ap_.get(), msg);
+  if (msg.has_capture_pre_gain()) {
+    // Handle capture pre-gain runtime setting only if not overridden.
+    if ((!settings_.use_pre_amplifier || *settings_.use_pre_amplifier) &&
+        !settings_.pre_amplifier_gain_factor) {
+      ap_->SetRuntimeSetting(
+          AudioProcessing::RuntimeSetting::CreateCapturePreGain(
+              msg.capture_pre_gain()));
+    }
+  } else if (msg.has_capture_fixed_post_gain()) {
+    // Handle capture fixed-post-gain runtime setting only if not overridden.
+    if ((!settings_.use_agc2 || *settings_.use_agc2) &&
+        !settings_.agc2_fixed_gain_db) {
+      ap_->SetRuntimeSetting(
+          AudioProcessing::RuntimeSetting::CreateCaptureFixedPostGain(
+              msg.capture_fixed_post_gain()));
+    }
+  } else if (msg.has_playout_volume_change()) {
+    ap_->SetRuntimeSetting(
+        AudioProcessing::RuntimeSetting::CreatePlayoutVolumeChange(
+            msg.playout_volume_change()));
+  }
+}
+
+void AecDumpBasedSimulator::MaybeOpenCallOrderFile() {
+  if (settings_.call_order_output_filename.has_value()) {
+    const std::string filename = settings_.store_intermediate_output
+                                     ? *settings_.call_order_output_filename +
+                                           "_" +
+                                           std::to_string(output_reset_counter_)
+                                     : *settings_.call_order_output_filename;
+    call_order_output_file_ = absl::make_unique<std::ofstream>(filename);
+  }
 }
 
 }  // namespace test

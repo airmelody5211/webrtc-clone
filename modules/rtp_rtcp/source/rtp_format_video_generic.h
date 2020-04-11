@@ -10,14 +10,18 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RTP_FORMAT_VIDEO_GENERIC_H_
 #define MODULES_RTP_RTCP_SOURCE_RTP_FORMAT_VIDEO_GENERIC_H_
 
+#include <stdint.h>
 #include <vector>
 
 #include "api/array_view.h"
-#include "common_types.h"  // NOLINT(build/include)
 #include "modules/rtp_rtcp/source/rtp_format.h"
-#include "rtc_base/constructormagic.h"
+#include "rtc_base/constructor_magic.h"
 
 namespace webrtc {
+
+class RtpPacketToSend;
+struct RTPVideoHeader;
+
 namespace RtpFormatVideoGeneric {
 static const uint8_t kKeyFrameBit = 0x01;
 static const uint8_t kFirstPacketBit = 0x02;
@@ -30,16 +34,23 @@ class RtpPacketizerGeneric : public RtpPacketizer {
  public:
   // Initialize with payload from encoder.
   // The payload_data must be exactly one encoded generic frame.
+  // Packets returned by |NextPacket| will contain the generic payload header.
   RtpPacketizerGeneric(rtc::ArrayView<const uint8_t> payload,
                        PayloadSizeLimits limits,
                        const RTPVideoHeader& rtp_video_header,
-                       FrameType frametype);
+                       VideoFrameType frametype);
+  // Initialize with payload from encoder.
+  // The payload_data must be exactly one encoded generic frame.
+  // Packets returned by |NextPacket| will contain raw payload without the
+  // generic payload header.
+  RtpPacketizerGeneric(rtc::ArrayView<const uint8_t> payload,
+                       PayloadSizeLimits limits);
 
   ~RtpPacketizerGeneric() override;
 
   size_t NumPackets() const override;
 
-  // Get the next payload with generic payload header.
+  // Get the next payload.
   // Write payload and set marker bit of the |packet|.
   // Returns true on success, false otherwise.
   bool NextPacket(RtpPacketToSend* packet) override;
@@ -47,7 +58,7 @@ class RtpPacketizerGeneric : public RtpPacketizer {
  private:
   // Fills header_ and header_size_ members.
   void BuildHeader(const RTPVideoHeader& rtp_video_header,
-                   FrameType frame_type);
+                   VideoFrameType frame_type);
 
   uint8_t header_[3];
   size_t header_size_;
@@ -61,11 +72,17 @@ class RtpPacketizerGeneric : public RtpPacketizer {
 // Depacketizer for generic codec.
 class RtpDepacketizerGeneric : public RtpDepacketizer {
  public:
+  // Parses the generic payload header if |generic_header_enabled| is true,
+  // returns raw payload otherwise.
+  explicit RtpDepacketizerGeneric(bool generic_header_enabled);
   ~RtpDepacketizerGeneric() override;
 
   bool Parse(ParsedPayload* parsed_payload,
              const uint8_t* payload_data,
              size_t payload_data_length) override;
+
+ private:
+  bool generic_header_enabled_;
 };
 }  // namespace webrtc
 #endif  // MODULES_RTP_RTCP_SOURCE_RTP_FORMAT_VIDEO_GENERIC_H_

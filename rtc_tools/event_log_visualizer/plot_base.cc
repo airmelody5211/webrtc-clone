@@ -11,7 +11,6 @@
 #include "rtc_tools/event_log_visualizer/plot_base.h"
 
 #include <algorithm>
-#include <limits>
 
 #include "rtc_base/checks.h"
 
@@ -67,8 +66,12 @@ void Plot::SetSuggestedYAxis(float min_value,
   SetYAxis(min_value, max_value, label, bottom_margin, top_margin);
 }
 
-void Plot::SetTitle(std::string title) {
+void Plot::SetTitle(const std::string& title) {
   title_ = title;
+}
+
+void Plot::SetId(const std::string& id) {
+  id_ = id;
 }
 
 void Plot::AppendTimeSeries(TimeSeries&& time_series) {

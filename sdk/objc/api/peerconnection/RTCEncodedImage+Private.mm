@@ -10,16 +10,47 @@
 
 #import "RTCEncodedImage+Private.h"
 
+#import <objc/runtime.h>
+
 #include "rtc_base/numerics/safe_conversions.h"
+
+// A simple wrapper around rtc::CopyOnWriteBuffer to make it usable with
+// associated objects.
+@interface RTCWrappedCOWBuffer : NSObject
+@property(nonatomic) rtc::CopyOnWriteBuffer buffer;
+- (instancetype)initWithCOWBuffer:(rtc::CopyOnWriteBuffer)buffer;
+@end
+@implementation RTCWrappedCOWBuffer
+@synthesize buffer = _buffer;
+- (instancetype)initWithCOWBuffer:(rtc::CopyOnWriteBuffer)buffer {
+  self = [super init];
+  if (self) {
+    _buffer = buffer;
+  }
+  return self;
+}
+@end
 
 @implementation RTCEncodedImage (Private)
 
-- (instancetype)initWithNativeEncodedImage:(webrtc::EncodedImage)encodedImage {
+- (rtc::CopyOnWriteBuffer)encodedData {
+  RTCWrappedCOWBuffer *wrappedBuffer = objc_getAssociatedObject(self, @selector(encodedData));
+  return wrappedBuffer.buffer;
+}
+
+- (void)setEncodedData:(rtc::CopyOnWriteBuffer)buffer {
+  return objc_setAssociatedObject(self,
+                                  @selector(encodedData),
+                                  [[RTCWrappedCOWBuffer alloc] initWithCOWBuffer:buffer],
+                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (instancetype)initWithNativeEncodedImage:(const webrtc::EncodedImage &)encodedImage {
   if (self = [super init]) {
     // Wrap the buffer in NSData without copying, do not take ownership.
-    self.buffer = [NSData dataWithBytesNoCopy:encodedImage._buffer
-                                   length:encodedImage._length
-                             freeWhenDone:NO];
+    self.buffer = [NSData dataWithBytesNoCopy:encodedImage.mutable_data()
+                                       length:encodedImage.size()
+                                 freeWhenDone:NO];
     self.encodedWidth = rtc::dchecked_cast<int32_t>(encodedImage._encodedWidth);
     self.encodedHeight = rtc::dchecked_cast<int32_t>(encodedImage._encodedHeight);
     self.timeStamp = encodedImage.Timestamp();
@@ -52,7 +83,7 @@
   encodedImage.timing_.flags = self.flags;
   encodedImage.timing_.encode_start_ms = self.encodeStartMs;
   encodedImage.timing_.encode_finish_ms = self.encodeFinishMs;
-  encodedImage._frameType = webrtc::FrameType(self.frameType);
+  encodedImage._frameType = webrtc::VideoFrameType(self.frameType);
   encodedImage.rotation_ = webrtc::VideoRotation(self.rotation);
   encodedImage._completeFrame = self.completeFrame;
   encodedImage.qp_ = self.qp ? self.qp.intValue : -1;

@@ -8,20 +8,17 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include <algorithm>
+#include <string.h>
 #include <cmath>
-
-#include "modules/audio_device/audio_device_buffer.h"
+#include <cstddef>
+#include <cstdint>
 
 #include "common_audio/signal_processing/include/signal_processing_library.h"
-#include "modules/audio_device/audio_device_config.h"
-#include "rtc_base/arraysize.h"
+#include "modules/audio_device/audio_device_buffer.h"
 #include "rtc_base/bind.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/format_macros.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/numerics/safe_conversions.h"
-#include "rtc_base/timeutils.h"
+#include "rtc_base/time_utils.h"
 #include "system_wrappers/include/metrics.h"
 
 namespace webrtc {
@@ -42,8 +39,10 @@ static const size_t kMinValidCallTimeTimeInMilliseconds =
 static const double k2Pi = 6.28318530717959;
 #endif
 
-AudioDeviceBuffer::AudioDeviceBuffer()
-    : task_queue_(kTimerQueueName),
+AudioDeviceBuffer::AudioDeviceBuffer(TaskQueueFactory* task_queue_factory)
+    : task_queue_(task_queue_factory->CreateTaskQueue(
+          kTimerQueueName,
+          TaskQueueFactory::Priority::NORMAL)),
       audio_transport_cb_(nullptr),
       rec_sample_rate_(0),
       play_sample_rate_(0),

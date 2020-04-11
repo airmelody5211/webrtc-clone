@@ -157,6 +157,9 @@ class MetaBuildWrapper(object):
                             help='look up the command for a given config or '
                                  'builder')
     AddCommonOptions(subp)
+    subp.add_argument('--quiet', default=False, action='store_true',
+                      help='Print out just the arguments, '
+                           'do not emulate the output of the gen subcommand.')
     subp.set_defaults(func=self.CmdLookup)
 
     subp = subps.add_parser(
@@ -286,12 +289,15 @@ class MetaBuildWrapper(object):
 
   def CmdLookup(self):
     vals = self.Lookup()
-    cmd = self.GNCmd('gen', '_path_')
     gn_args = self.GNArgs(vals)
-    self.Print('\nWriting """\\\n%s""" to _path_/args.gn.\n' % gn_args)
-    env = None
+    if self.args.quiet:
+      self.Print(gn_args, end='')
+    else:
+      cmd = self.GNCmd('gen', '_path_')
+      self.Print('\nWriting """\\\n%s""" to _path_/args.gn.\n' % gn_args)
+      env = None
 
-    self.PrintCmd(cmd, env)
+      self.PrintCmd(cmd, env)
     return 0
 
   def CmdRun(self):
@@ -463,35 +469,18 @@ class MetaBuildWrapper(object):
     return ' '.join(gn_args)
 
   def Lookup(self):
-    vals = self.ReadIOSBotConfig()
-    if not vals:
-      self.ReadConfigFile()
-      config = self.ConfigFromArgs()
-      if config.startswith('//'):
-        if not self.Exists(self.ToAbsPath(config)):
-          raise MBErr('args file "%s" not found' % config)
-        vals = self.DefaultVals()
-        vals['args_file'] = config
-      else:
-        if not config in self.configs:
-          raise MBErr('Config "%s" not found in %s' %
-                      (config, self.args.config_file))
-        vals = self.FlattenConfig(config)
-    return vals
-
-  def ReadIOSBotConfig(self):
-    if not self.args.master or not self.args.builder:
-      return {}
-    path = self.PathJoin(self.src_dir, 'tools_webrtc', 'ios', self.args.master,
-                         self.args.builder.replace(' ', '_') + '.json')
-    if not self.Exists(path):
-      return {}
-
-    contents = json.loads(self.ReadFile(path))
-    gn_args = ' '.join(contents.get('gn_args', []))
-
-    vals = self.DefaultVals()
-    vals['gn_args'] = gn_args
+    self.ReadConfigFile()
+    config = self.ConfigFromArgs()
+    if config.startswith('//'):
+      if not self.Exists(self.ToAbsPath(config)):
+        raise MBErr('args file "%s" not found' % config)
+      vals = self.DefaultVals()
+      vals['args_file'] = config
+    else:
+      if not config in self.configs:
+        raise MBErr('Config "%s" not found in %s' %
+                    (config, self.args.config_file))
+      vals = self.FlattenConfig(config)
     return vals
 
   def ReadConfigFile(self):
@@ -833,6 +822,7 @@ class MetaBuildWrapper(object):
       '../../testing/test_env.py',
     ]
 
+    must_retry = False
     if test_type == 'script':
       cmdline = ['../../' + self.ToSrcRelPath(isolate_map[target]['script'])]
     elif is_android:
@@ -874,23 +864,27 @@ class MetaBuildWrapper(object):
             # so it can exit cleanly and report results, instead of being
             # interrupted by swarming and not reporting anything.
             '--timeout=%s' % timeout,
-            '--retry_failed=3',
         ]
         if test_type == 'non_parallel_console_test_launcher':
           # Still use the gtest-parallel-wrapper.py script since we need it to
           # run tests on swarming, but don't execute tests in parallel.
           cmdline.append('--workers=1')
+        must_retry = True
+
+      asan = 'is_asan=true' in vals['gn_args']
+      lsan = 'is_lsan=true' in vals['gn_args']
+      msan = 'is_msan=true' in vals['gn_args']
+      tsan = 'is_tsan=true' in vals['gn_args']
+      sanitizer = asan or lsan or msan or tsan
+      if must_retry and not sanitizer:
+        # Retry would hide most sanitizers detections.
+        cmdline.append('--retry_failed=3')
 
       executable_prefix = '.\\' if self.platform == 'win32' else './'
       executable_suffix = '.exe' if self.platform == 'win32' else ''
       executable = executable_prefix + target + executable_suffix
 
       cmdline.append(executable)
-
-      asan = 'is_asan=true' in vals['gn_args']
-      lsan = 'is_lsan=true' in vals['gn_args']
-      msan = 'is_msan=true' in vals['gn_args']
-      tsan = 'is_tsan=true' in vals['gn_args']
 
       cmdline.extend([
           '--asan=%d' % asan,

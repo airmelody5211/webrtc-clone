@@ -14,13 +14,19 @@
 #include "modules/audio_device/linux/audio_device_alsa_linux.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/system/arch.h"
-#include "system_wrappers/include/event_wrapper.h"
 #include "system_wrappers/include/sleep.h"
 
 WebRTCAlsaSymbolTable* GetAlsaSymbolTable() {
   static WebRTCAlsaSymbolTable* alsa_symbol_table = new WebRTCAlsaSymbolTable();
   return alsa_symbol_table;
 }
+
+// Accesses ALSA functions through our late-binding symbol table instead of
+// directly. This way we don't have to link to libasound, which means our binary
+// will work on systems that don't have it.
+#define LATE(sym)                                                            \
+  LATESYM_GET(webrtc::adm_linux_alsa::AlsaSymbolTable, GetAlsaSymbolTable(), \
+              sym)
 
 // Redefine these here to be able to do late-binding
 #undef snd_ctl_card_info_alloca
@@ -44,7 +50,7 @@ void WebrtcAlsaErrorHandler(const char* file,
                             const char* function,
                             int err,
                             const char* fmt,
-                            ...){};
+                            ...) {}
 
 namespace webrtc {
 static const unsigned int ALSA_PLAYOUT_FREQ = 48000;
@@ -1021,10 +1027,10 @@ int32_t AudioDeviceLinuxALSA::StartRecording() {
   }
   // RECORDING
   _ptrThreadRec.reset(new rtc::PlatformThread(
-      RecThreadFunc, this, "webrtc_audio_module_capture_thread"));
+      RecThreadFunc, this, "webrtc_audio_module_capture_thread",
+      rtc::kRealtimePriority));
 
   _ptrThreadRec->Start();
-  _ptrThreadRec->SetPriority(rtc::kRealtimePriority);
 
   errVal = LATE(snd_pcm_prepare)(_handleRecord);
   if (errVal < 0) {
@@ -1139,9 +1145,9 @@ int32_t AudioDeviceLinuxALSA::StartPlayout() {
 
   // PLAYOUT
   _ptrThreadPlay.reset(new rtc::PlatformThread(
-      PlayThreadFunc, this, "webrtc_audio_module_play_thread"));
+      PlayThreadFunc, this, "webrtc_audio_module_play_thread",
+      rtc::kRealtimePriority));
   _ptrThreadPlay->Start();
-  _ptrThreadPlay->SetPriority(rtc::kRealtimePriority);
 
   int errVal = LATE(snd_pcm_prepare)(_handlePlayout);
   if (errVal < 0) {
@@ -1450,12 +1456,16 @@ int32_t AudioDeviceLinuxALSA::ErrorRecovery(int32_t error,
 //                                  Thread Methods
 // ============================================================================
 
-bool AudioDeviceLinuxALSA::PlayThreadFunc(void* pThis) {
-  return (static_cast<AudioDeviceLinuxALSA*>(pThis)->PlayThreadProcess());
+void AudioDeviceLinuxALSA::PlayThreadFunc(void* pThis) {
+  AudioDeviceLinuxALSA* device = static_cast<AudioDeviceLinuxALSA*>(pThis);
+  while (device->PlayThreadProcess()) {
+  }
 }
 
-bool AudioDeviceLinuxALSA::RecThreadFunc(void* pThis) {
-  return (static_cast<AudioDeviceLinuxALSA*>(pThis)->RecThreadProcess());
+void AudioDeviceLinuxALSA::RecThreadFunc(void* pThis) {
+  AudioDeviceLinuxALSA* device = static_cast<AudioDeviceLinuxALSA*>(pThis);
+  while (device->RecThreadProcess()) {
+  }
 }
 
 bool AudioDeviceLinuxALSA::PlayThreadProcess() {

@@ -17,12 +17,12 @@
 
 #include "api/array_view.h"
 #include "modules/audio_processing/test/test_utils.h"
-#include "rtc_base/atomicops.h"
+#include "rtc_base/atomic_ops.h"
+#include "rtc_base/event.h"
 #include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/platform_thread.h"
 #include "rtc_base/random.h"
 #include "system_wrappers/include/clock.h"
-#include "system_wrappers/include/event_wrapper.h"
 #include "test/gtest.h"
 #include "test/testsupport/perf_test.h"
 
@@ -391,20 +391,22 @@ class TimedThreadApiProcessor {
 class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
  public:
   CallSimulator()
-      : test_complete_(EventWrapper::Create()),
-        render_thread_(
-            new rtc::PlatformThread(RenderProcessorThreadFunc, this, "render")),
+      : render_thread_(new rtc::PlatformThread(RenderProcessorThreadFunc,
+                                               this,
+                                               "render",
+                                               rtc::kRealtimePriority)),
         capture_thread_(new rtc::PlatformThread(CaptureProcessorThreadFunc,
                                                 this,
-                                                "capture")),
+                                                "capture",
+                                                rtc::kRealtimePriority)),
         rand_gen_(42U),
         simulation_config_(static_cast<SimulationConfig>(GetParam())) {}
 
   // Run the call simulation with a timeout.
-  EventTypeWrapper Run() {
+  bool Run() {
     StartThreads();
 
-    EventTypeWrapper result = test_complete_->Wait(kTestTimeout);
+    bool result = test_complete_.Wait(kTestTimeout);
 
     StopThreads();
 
@@ -420,7 +422,7 @@ class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
   // done.
   bool MaybeEndTest() {
     if (frame_counters_.BothCountersExceedeThreshold(kMinNumFramesToProcess)) {
-      test_complete_->Set();
+      test_complete_.Set();
       return true;
     }
     return false;
@@ -451,10 +453,10 @@ class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
                 apm->gain_control()->set_mode(GainControl::kAdaptiveDigital));
       ASSERT_EQ(apm->kNoError, apm->gain_control()->Enable(true));
       ASSERT_EQ(apm->kNoError, apm->noise_suppression()->Enable(true));
-      ASSERT_EQ(apm->kNoError, apm->voice_detection()->Enable(true));
       AudioProcessing::Config apm_config = apm->GetConfig();
       apm_config.echo_canceller.enabled = true;
       apm_config.echo_canceller.mobile_mode = false;
+      apm_config.voice_detection.enabled = true;
       apm->ApplyConfig(apm_config);
     };
 
@@ -466,10 +468,10 @@ class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
                 apm->gain_control()->set_mode(GainControl::kAdaptiveDigital));
       ASSERT_EQ(apm->kNoError, apm->gain_control()->Enable(true));
       ASSERT_EQ(apm->kNoError, apm->noise_suppression()->Enable(true));
-      ASSERT_EQ(apm->kNoError, apm->voice_detection()->Enable(true));
       AudioProcessing::Config apm_config = apm->GetConfig();
       apm_config.echo_canceller.enabled = true;
       apm_config.echo_canceller.mobile_mode = true;
+      apm_config.voice_detection.enabled = true;
       apm->ApplyConfig(apm_config);
     };
 
@@ -482,9 +484,9 @@ class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
                 apm->gain_control()->set_mode(GainControl::kAdaptiveDigital));
       ASSERT_EQ(apm->kNoError, apm->gain_control()->Enable(false));
       ASSERT_EQ(apm->kNoError, apm->noise_suppression()->Enable(false));
-      ASSERT_EQ(apm->kNoError, apm->voice_detection()->Enable(false));
       AudioProcessing::Config apm_config = apm->GetConfig();
       apm_config.echo_canceller.enabled = false;
+      apm_config.voice_detection.enabled = false;
       apm->ApplyConfig(apm_config);
     };
 
@@ -550,27 +552,27 @@ class CallSimulator : public ::testing::TestWithParam<SimulationConfig> {
   }
 
   // Thread callback for the render thread.
-  static bool RenderProcessorThreadFunc(void* context) {
-    return reinterpret_cast<CallSimulator*>(context)
-        ->render_thread_state_->Process();
+  static void RenderProcessorThreadFunc(void* context) {
+    CallSimulator* call_simulator = reinterpret_cast<CallSimulator*>(context);
+    while (call_simulator->render_thread_state_->Process()) {
+    }
   }
 
   // Thread callback for the capture thread.
-  static bool CaptureProcessorThreadFunc(void* context) {
-    return reinterpret_cast<CallSimulator*>(context)
-        ->capture_thread_state_->Process();
+  static void CaptureProcessorThreadFunc(void* context) {
+    CallSimulator* call_simulator = reinterpret_cast<CallSimulator*>(context);
+    while (call_simulator->capture_thread_state_->Process()) {
+    }
   }
 
   // Start the threads used in the test.
   void StartThreads() {
     ASSERT_NO_FATAL_FAILURE(render_thread_->Start());
-    render_thread_->SetPriority(rtc::kRealtimePriority);
     ASSERT_NO_FATAL_FAILURE(capture_thread_->Start());
-    capture_thread_->SetPriority(rtc::kRealtimePriority);
   }
 
   // Event handler for the test.
-  const std::unique_ptr<EventWrapper> test_complete_;
+  rtc::Event test_complete_;
 
   // Thread related variables.
   std::unique_ptr<rtc::PlatformThread> render_thread_;
@@ -619,10 +621,10 @@ const float CallSimulator::kCaptureInputFloatLevel = 0.03125f;
 // TODO(peah): Reactivate once issue 7712 has been resolved.
 TEST_P(CallSimulator, DISABLED_ApiCallDurationTest) {
   // Run test and verify that it did not time out.
-  EXPECT_EQ(kEventSignaled, Run());
+  EXPECT_TRUE(Run());
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     AudioProcessingPerformanceTest,
     CallSimulator,
     ::testing::ValuesIn(SimulationConfig::GenerateSimulationConfigs()));

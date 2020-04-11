@@ -13,10 +13,16 @@
 // The debug files are dumped as protobuf blobs. For analysis, it's necessary
 // to unpack the file into its component parts: audio and other data.
 
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
-
+#include <stdlib.h>
 #include <memory>
+#include <string>
+#include <vector>
 
+#include "api/function_view.h"
+#include "common_audio/wav_file.h"
 #include "modules/audio_processing/test/protobuf_utils.h"
 #include "modules/audio_processing/test/test_utils.h"
 #include "rtc_base/flags.h"
@@ -26,30 +32,38 @@
 
 RTC_PUSH_IGNORING_WUNDEF()
 #include "modules/audio_processing/debug.pb.h"
+
 RTC_POP_IGNORING_WUNDEF()
 
 // TODO(andrew): unpack more of the data.
-DEFINE_string(input_file, "input", "The name of the input stream file.");
-DEFINE_string(output_file,
-              "ref_out",
-              "The name of the reference output stream file.");
-DEFINE_string(reverse_file,
-              "reverse",
-              "The name of the reverse input stream file.");
-DEFINE_string(delay_file, "delay.int32", "The name of the delay file.");
-DEFINE_string(drift_file, "drift.int32", "The name of the drift file.");
-DEFINE_string(level_file, "level.int32", "The name of the level file.");
-DEFINE_string(keypress_file, "keypress.bool", "The name of the keypress file.");
-DEFINE_string(callorder_file,
-              "callorder",
-              "The name of the render/capture call order file.");
-DEFINE_string(settings_file, "settings.txt", "The name of the settings file.");
-DEFINE_bool(full, false, "Unpack the full set of files (normally not needed).");
-DEFINE_bool(raw, false, "Write raw data instead of a WAV file.");
-DEFINE_bool(text,
-            false,
-            "Write non-audio files as text files instead of binary files.");
-DEFINE_bool(help, false, "Print this message.");
+WEBRTC_DEFINE_string(input_file, "input", "The name of the input stream file.");
+WEBRTC_DEFINE_string(output_file,
+                     "ref_out",
+                     "The name of the reference output stream file.");
+WEBRTC_DEFINE_string(reverse_file,
+                     "reverse",
+                     "The name of the reverse input stream file.");
+WEBRTC_DEFINE_string(delay_file, "delay.int32", "The name of the delay file.");
+WEBRTC_DEFINE_string(drift_file, "drift.int32", "The name of the drift file.");
+WEBRTC_DEFINE_string(level_file, "level.int32", "The name of the level file.");
+WEBRTC_DEFINE_string(keypress_file,
+                     "keypress.bool",
+                     "The name of the keypress file.");
+WEBRTC_DEFINE_string(callorder_file,
+                     "callorder",
+                     "The name of the render/capture call order file.");
+WEBRTC_DEFINE_string(settings_file,
+                     "settings.txt",
+                     "The name of the settings file.");
+WEBRTC_DEFINE_bool(full,
+                   false,
+                   "Unpack the full set of files (normally not needed).");
+WEBRTC_DEFINE_bool(raw, false, "Write raw data instead of a WAV file.");
+WEBRTC_DEFINE_bool(
+    text,
+    false,
+    "Write non-audio files as text files instead of binary files.");
+WEBRTC_DEFINE_bool(help, false, "Print this message.");
 
 #define PRINT_CONFIG(field_name)                                         \
   if (msg.has_##field_name()) {                                          \
@@ -85,6 +99,112 @@ void WriteCallOrderData(const bool render_call,
                         const std::string& filename) {
   const char call_type = render_call ? 'r' : 'c';
   WriteData(&call_type, sizeof(call_type), file, filename.c_str());
+}
+
+bool WritingCallOrderFile() {
+  return FLAG_full;
+}
+
+bool WritingRuntimeSettingFiles() {
+  return FLAG_full;
+}
+
+// Exports RuntimeSetting AEC dump events to Audacity-readable files.
+// This class is not RAII compliant.
+class RuntimeSettingWriter {
+ public:
+  RuntimeSettingWriter(
+      std::string name,
+      rtc::FunctionView<bool(const Event)> is_exporter_for,
+      rtc::FunctionView<std::string(const Event)> get_timeline_label)
+      : setting_name_(std::move(name)),
+        is_exporter_for_(is_exporter_for),
+        get_timeline_label_(get_timeline_label) {}
+  ~RuntimeSettingWriter() { Flush(); }
+
+  bool IsExporterFor(const Event& event) const {
+    return is_exporter_for_(event);
+  }
+
+  // Writes to file the payload of |event| using |frame_count| to calculate
+  // timestamp.
+  void WriteEvent(const Event& event, int frame_count) {
+    RTC_DCHECK(is_exporter_for_(event));
+    if (file_ == nullptr) {
+      rtc::StringBuilder file_name;
+      file_name << setting_name_ << frame_offset_ << ".txt";
+      file_ = OpenFile(file_name.str(), "wb");
+    }
+
+    // Time in the current WAV file, in seconds.
+    double time = (frame_count - frame_offset_) / 100.0;
+    std::string label = get_timeline_label_(event);
+    // In Audacity, all annotations are encoded as intervals.
+    fprintf(file_, "%.6f\t%.6f\t%s \n", time, time, label.c_str());
+  }
+
+  // Handles an AEC dump initialization event, occurring at frame
+  // |frame_offset|.
+  void HandleInitEvent(int frame_offset) {
+    Flush();
+    frame_offset_ = frame_offset;
+  }
+
+ private:
+  void Flush() {
+    if (file_ != nullptr) {
+      fclose(file_);
+      file_ = nullptr;
+    }
+  }
+
+  FILE* file_ = nullptr;
+  int frame_offset_ = 0;
+  const std::string setting_name_;
+  const rtc::FunctionView<bool(Event)> is_exporter_for_;
+  const rtc::FunctionView<std::string(Event)> get_timeline_label_;
+};
+
+// Returns RuntimeSetting exporters for runtime setting types defined in
+// debug.proto.
+std::vector<RuntimeSettingWriter> RuntimeSettingWriters() {
+  return {
+      RuntimeSettingWriter(
+          "CapturePreGain",
+          [](const Event& event) -> bool {
+            return event.runtime_setting().has_capture_pre_gain();
+          },
+          [](const Event& event) -> std::string {
+            return std::to_string(event.runtime_setting().capture_pre_gain());
+          }),
+      RuntimeSettingWriter(
+          "CustomRenderProcessingRuntimeSetting",
+          [](const Event& event) -> bool {
+            return event.runtime_setting()
+                .has_custom_render_processing_setting();
+          },
+          [](const Event& event) -> std::string {
+            return std::to_string(
+                event.runtime_setting().custom_render_processing_setting());
+          }),
+      RuntimeSettingWriter(
+          "CaptureFixedPostGain",
+          [](const Event& event) -> bool {
+            return event.runtime_setting().has_capture_fixed_post_gain();
+          },
+          [](const Event& event) -> std::string {
+            return std::to_string(
+                event.runtime_setting().capture_fixed_post_gain());
+          }),
+      RuntimeSettingWriter(
+          "PlayoutVolumeChange",
+          [](const Event& event) -> bool {
+            return event.runtime_setting().has_playout_volume_change();
+          },
+          [](const Event& event) -> std::string {
+            return std::to_string(
+                event.runtime_setting().playout_volume_change());
+          })};
 }
 
 }  // namespace
@@ -125,8 +245,13 @@ int do_main(int argc, char* argv[]) {
 
   rtc::StringBuilder callorder_raw_name;
   callorder_raw_name << FLAG_callorder_file << ".char";
-  FILE* callorder_char_file = OpenFile(callorder_raw_name.str(), "wb");
+  FILE* callorder_char_file = WritingCallOrderFile()
+                                  ? OpenFile(callorder_raw_name.str(), "wb")
+                                  : nullptr;
   FILE* settings_file = OpenFile(FLAG_settings_file, "wb");
+
+  std::vector<RuntimeSettingWriter> runtime_setting_writers =
+      RuntimeSettingWriters();
 
   while (ReadMessageFromFile(debug_file, &event_msg)) {
     if (event_msg.type() == Event::REVERSE_STREAM) {
@@ -163,8 +288,10 @@ int do_main(int argc, char* argv[]) {
                        reverse_raw_file.get());
       }
       if (FLAG_full) {
-        WriteCallOrderData(true /* render_call */, callorder_char_file,
-                           FLAG_callorder_file);
+        if (WritingCallOrderFile()) {
+          WriteCallOrderData(true /* render_call */, callorder_char_file,
+                             FLAG_callorder_file);
+        }
       }
     } else if (event_msg.type() == Event::STREAM) {
       frame_count++;
@@ -222,8 +349,10 @@ int do_main(int argc, char* argv[]) {
       }
 
       if (FLAG_full) {
-        WriteCallOrderData(false /* render_call */, callorder_char_file,
-                           FLAG_callorder_file);
+        if (WritingCallOrderFile()) {
+          WriteCallOrderData(false /* render_call */, callorder_char_file,
+                             FLAG_callorder_file);
+        }
         if (msg.has_delay()) {
           static FILE* delay_file = OpenFile(FLAG_delay_file, "wb");
           int32_t delay = msg.delay();
@@ -359,9 +488,25 @@ int do_main(int argc, char* argv[]) {
         output_wav_file.reset(new WavWriter(
             output_name.str(), output_sample_rate, num_output_channels));
 
-        rtc::StringBuilder callorder_name;
-        callorder_name << FLAG_callorder_file << frame_count << ".char";
-        callorder_char_file = OpenFile(callorder_name.str(), "wb");
+        if (WritingCallOrderFile()) {
+          rtc::StringBuilder callorder_name;
+          callorder_name << FLAG_callorder_file << frame_count << ".char";
+          callorder_char_file = OpenFile(callorder_name.str(), "wb");
+        }
+
+        if (WritingRuntimeSettingFiles()) {
+          for (RuntimeSettingWriter& writer : runtime_setting_writers) {
+            writer.HandleInitEvent(frame_count);
+          }
+        }
+      }
+    } else if (event_msg.type() == Event::RUNTIME_SETTING) {
+      if (WritingRuntimeSettingFiles()) {
+        for (RuntimeSettingWriter& writer : runtime_setting_writers) {
+          if (writer.IsExporterFor(event_msg)) {
+            writer.WriteEvent(event_msg, frame_count);
+          }
+        }
       }
     }
   }

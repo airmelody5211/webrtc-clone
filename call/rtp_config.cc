@@ -10,9 +10,16 @@
 
 #include "call/rtp_config.h"
 
+#include <cstdint>
+
+#include "api/array_view.h"
 #include "rtc_base/strings/string_builder.h"
 
 namespace webrtc {
+
+std::string LntfConfig::ToString() const {
+  return enabled ? "{enabled: true}" : "{enabled: false}";
+}
 
 std::string NackConfig::ToString() const {
   char buf[1024];
@@ -60,6 +67,7 @@ std::string RtpConfig::ToString() const {
      << (rtcp_mode == RtcpMode::kCompound ? "RtcpMode::kCompound"
                                           : "RtcpMode::kReducedSize");
   ss << ", max_packet_size: " << max_packet_size;
+  ss << ", extmap-allow-mixed: " << (extmap_allow_mixed ? "true" : "false");
   ss << ", extensions: [";
   for (size_t i = 0; i < extensions.size(); ++i) {
     ss << extensions[i].ToString();
@@ -68,10 +76,12 @@ std::string RtpConfig::ToString() const {
   }
   ss << ']';
 
+  ss << ", lntf: " << lntf.ToString();
   ss << ", nack: {rtp_history_ms: " << nack.rtp_history_ms << '}';
   ss << ", ulpfec: " << ulpfec.ToString();
   ss << ", payload_name: " << payload_name;
   ss << ", payload_type: " << payload_type;
+  ss << ", raw_payload: " << (raw_payload ? "true" : "false");
 
   ss << ", flexfec: {payload_type: " << flexfec.payload_type;
   ss << ", ssrc: " << flexfec.ssrc;
@@ -108,18 +118,4 @@ std::string RtpConfig::Rtx::ToString() const {
   ss << '}';
   return ss.str();
 }
-
-RtcpConfig::RtcpConfig() = default;
-RtcpConfig::RtcpConfig(const RtcpConfig&) = default;
-RtcpConfig::~RtcpConfig() = default;
-
-std::string RtcpConfig::ToString() const {
-  char buf[1024];
-  rtc::SimpleStringBuilder ss(buf);
-  ss << "{video_report_interval_ms: " << video_report_interval_ms;
-  ss << ", audio_report_interval_ms: " << audio_report_interval_ms;
-  ss << '}';
-  return ss.str();
-}
-
 }  // namespace webrtc
